@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SUMAC Login</title>
+  <style>
+    body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #f0f4f8; }
+    button { padding: 14px 32px; font-size: 1.1rem; background: #2563eb; color: white; border: none; border-radius: 8px; cursor: pointer; }
+    button:hover { background: #1d4ed8; }
+    button:disabled { background: #93c5fd; cursor: not-allowed; }
+    #status { margin-top: 20px; font-size: 0.95rem; color: #374151; max-width: 400px; text-align: center; }
+  </style>
+</head>
+<body>
+  <h1>SUMAC Bot</h1>
+  <button id="loginBtn" onclick="triggerLogin()">Login to SUMAC</button>
+  <p id="status"></p>
+
+  <script>
+    async function triggerLogin() {
+      const btn = document.getElementById("loginBtn");
+      const status = document.getElementById("status");
+      btn.disabled = true;
+      status.textContent = "Logging in...";
+
+      try {
+        const res = await fetch("/login", { method: "POST" });
+        const data = await res.json();
+        status.textContent = data.message;
+      } catch (e) {
+        status.textContent = "Request failed: " + e.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+  </script>
+</body>
+</html>
