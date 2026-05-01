@@ -223,7 +223,16 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls):
     # means by the time we reach pill 1, the viewer holds a different pill's
     # content, forcing a real reload and a fresh blob URL we can capture.
     for j in range(pill_count - 1, -1, -1):
-        print(f"    [Anejo] Clicking attachment {j + 1}/{pill_count}...")
+        # Read the pill label BEFORE clicking — it may change or disappear after.
+        try:
+            raw_label = pills.nth(j).inner_text(timeout=1000).strip()
+        except Exception:
+            raw_label = ""
+        # Sanitize for use in a filename: collapse whitespace, remove illegal chars.
+        pill_label = re.sub(r'[\\/:*?"<>|]+', '', raw_label).strip()
+        pill_label = re.sub(r'\s+', ' ', pill_label)
+
+        print(f"    [Anejo] Clicking attachment {j + 1}/{pill_count}: '{pill_label}'...")
 
         # Snapshot BEFORE clicking so we can detect what the single click produces.
         urls_before = list(captured_pdf_urls)
@@ -233,7 +242,9 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls):
             with page.expect_download(timeout=4000) as dl_info:
                 pills.nth(j).click()
             dl = dl_info.value
-            fname = f"{filename_prefix}_anejo_{j + 1}_{dl.suggested_filename or 'attachment.pdf'}"
+            base = dl.suggested_filename or 'attachment.pdf'
+            label_part = f" - {pill_label}" if pill_label else ""
+            fname = f"{filename_prefix}_anejo_{j + 1}{label_part}_{base}"
             save_path = os.path.join("sumac_documents", fname)
             dl.save_as(save_path)
             print(f"    [Anejo] Saved: {save_path}")
@@ -251,7 +262,8 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls):
         url = (new_blobs or new_urls or [None])[-1]
 
         if url:
-            fname = f"{filename_prefix}_anejo_{j + 1}.pdf"
+            label_part = f" - {pill_label}" if pill_label else ""
+            fname = f"{filename_prefix}_anejo_{j + 1}{label_part}.pdf"
             save_path = os.path.join("sumac_documents", fname)
             print(f"    [Anejo] Saving intercepted PDF: {url}")
             if _save_pdf_from_url(page, url, save_path):
@@ -360,7 +372,7 @@ def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls):
 
     print(f"  Found {exp_count} expedientes: {exp_numbers}")
 
-    for i, exp_number in enumerate(exp_numbers[:3]):
+    for i, exp_number in enumerate(exp_numbers[:5]):
         try:
             _process_expediente(page, i, case_number, exp_number, exp_dates[i], captured_pdf_urls)
         except Exception as e:
