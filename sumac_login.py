@@ -10,6 +10,7 @@
 # page.goto() to force a full re-navigation rather than relying on DOM re-renders.
 
 from playwright.sync_api import sync_playwright
+from pathlib import Path
 import os
 import re
 import urllib.request
@@ -87,6 +88,14 @@ def _save_pdf_from_url(page, url, save_path):
     return False
 
 
+def _already_downloaded(prefix):
+    """Return True if sumac_documents already contains a file whose name starts with prefix."""
+    dest = Path("sumac_documents")
+    if not dest.exists():
+        return False
+    return any(f.name.startswith(prefix) for f in dest.iterdir() if f.is_file())
+
+
 MESES = {
     "enero": "01", "febrero": "02", "marzo": "03", "abril": "04",
     "mayo": "05", "junio": "06", "julio": "07", "agosto": "08",
@@ -127,6 +136,13 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls):
     if tab.count() == 0:
         print(f"    Tab '{tab_name}' not found.")
         return False
+
+    # Skip the network round-trip if this tab's PDF was already saved in a prior run.
+    # The prefix {filename_prefix}_{tab_name}_ is unique enough (encodes date,
+    # expediente number, case code, and tab name) to avoid false positives.
+    if _already_downloaded(f"{filename_prefix}_{tab_name}_"):
+        print(f"    [{tab_name}] Already downloaded, skipping.")
+        return True
 
     # Clear the shared URL buffer before clicking so we only capture URLs that
     # result from this specific tab activation.
@@ -237,6 +253,11 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls):
     # means by the time we reach pill 1, the viewer holds a different pill's
     # content, forcing a real reload and a fresh blob URL we can capture.
     for j in range(pill_count - 1, -1, -1):
+        # Skip if this attachment index was already saved in a prior run.
+        if _already_downloaded(f"{filename_prefix}_anejo_{j + 1}"):
+            print(f"    [Anejo] Attachment {j + 1} already downloaded, skipping.")
+            continue
+
         # Read the pill label BEFORE clicking — it may change or disappear after.
         try:
             raw_label = pills.nth(j).inner_text(timeout=1000).strip()
@@ -253,7 +274,7 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls):
 
         try:
             # Strategy A: click triggers a browser download event.
-            with page.expect_download(timeout=4000) as dl_info:
+            with page.expect_download(timeout=1500) as dl_info:
                 pills.nth(j).click()
             dl = dl_info.value
             base = dl.suggested_filename or 'attachment.pdf'
@@ -270,7 +291,7 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls):
 
         # Strategy B: wait for the blob that the Strategy A click produced,
         # then save it.  No second click — the pill was already clicked above.
-        page.wait_for_timeout(2500)
+        page.wait_for_timeout(1500)
         new_urls = [u for u in captured_pdf_urls if u not in urls_before]
         new_blobs = [u for u in new_urls if u.startswith("blob:")]
         url = (new_blobs or new_urls or [None])[-1]
