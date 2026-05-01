@@ -134,6 +134,20 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls):
     tab.first.click()
     page.wait_for_timeout(2000)  # Let the tab content load before inspecting DOM
 
+    # Read the document title shown in the tab header (h1 inside the document
+    # header container).  Prefer the title attribute; fall back to inner text.
+    doc_title = ""
+    try:
+        h1 = page.locator(".caseEntryDocumentContainer__documentHeader h1").first
+        doc_title = (h1.get_attribute("title") or h1.inner_text(timeout=1000) or "").strip()
+        # Sanitize: remove characters illegal in filenames, collapse whitespace.
+        doc_title = re.sub(r'[\\/:*?"<>|]+', '', doc_title).strip()
+        doc_title = re.sub(r'\s+', ' ', doc_title)
+    except Exception:
+        doc_title = ""
+
+    title_part = f" - {doc_title}" if doc_title else ""
+
     # Strategy 1: dedicated download button (.caseEntriesView__downloadButton)
     dl_btn = page.locator(".caseEntriesView__downloadButton")
     if dl_btn.count() > 0:
@@ -145,7 +159,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls):
                 with page.expect_download(timeout=3000) as dl_info:
                     dl_btn.nth(j).click()
                 dl = dl_info.value
-                fname = f"{filename_prefix}_{tab_name}_{j+1}_{dl.suggested_filename or 'document.pdf'}"
+                fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}_{dl.suggested_filename or 'document.pdf'}"
                 save_path = os.path.join("sumac_documents", fname)
                 dl.save_as(save_path)
                 print(f"    Saved: {save_path}")
@@ -164,7 +178,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls):
                     with page.expect_download(timeout=3000) as dl_info:
                         elems.nth(j).click()
                     dl = dl_info.value
-                    fname = f"{filename_prefix}_{tab_name}_{j+1}_{dl.suggested_filename or 'document.pdf'}"
+                    fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}_{dl.suggested_filename or 'document.pdf'}"
                     save_path = os.path.join("sumac_documents", fname)
                     dl.save_as(save_path)
                     print(f"    Saved: {save_path}")
@@ -178,7 +192,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls):
     # fetch them manually using urllib with the session cookies.
     if captured_pdf_urls:
         for j, url in enumerate(list(captured_pdf_urls)):
-            fname = f"{filename_prefix}_{tab_name}_{j+1}.pdf"
+            fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}.pdf"
             save_path = os.path.join("sumac_documents", fname)
             print(f"    [{tab_name}] Saving intercepted PDF: {url}")
             if _save_pdf_from_url(page, url, save_path):
