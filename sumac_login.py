@@ -14,6 +14,7 @@ from pathlib import Path
 import os
 import re
 import urllib.request
+import time
 
 # Entry point for the sign-in form.
 SUMAC_URL = "https://tribunalelectronico.ramajudicial.pr/sumac2018/signIn.html"
@@ -148,7 +149,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls):
     # result from this specific tab activation.
     captured_pdf_urls.clear()
     tab.first.click()
-    page.wait_for_timeout(2000)  # Let the tab content load before inspecting DOM
+    page.wait_for_timeout(4000)  # Let the tab content load before inspecting DOM
 
     # Read the document title shown in the tab header (h1 inside the document
     # header container).  Prefer the title attribute; fall back to inner text.
@@ -157,8 +158,9 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls):
         h1 = page.locator(".caseEntryDocumentContainer__documentHeader h1").first
         doc_title = (h1.get_attribute("title") or h1.inner_text(timeout=1000) or "").strip()
         # Sanitize: remove characters illegal in filenames, collapse whitespace.
-        doc_title = re.sub(r'[\\/:*?"<>|]+', '', doc_title).strip()
-        doc_title = re.sub(r'\s+', ' ', doc_title)
+        doc_title = re.sub(r'[\\/:*?"<>|.]+', '', doc_title).strip()
+        doc_title = re.sub(r'\s+', ' ', doc_title)[:50]
+     
     except Exception:
         doc_title = ""
 
@@ -175,7 +177,9 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls):
                 with page.expect_download(timeout=3000) as dl_info:
                     dl_btn.nth(j).click()
                 dl = dl_info.value
-                fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}_{dl.suggested_filename or 'document.pdf'}"
+                #fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}_{dl.suggested_filename or 'document.pdf'}"
+                fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}.pdf"
+                    
                 save_path = os.path.join("sumac_documents", fname)
                 dl.save_as(save_path)
                 print(f"    Saved: {save_path}")
@@ -194,7 +198,8 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls):
                     with page.expect_download(timeout=3000) as dl_info:
                         elems.nth(j).click()
                     dl = dl_info.value
-                    fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}_{dl.suggested_filename or 'document.pdf'}"
+                    #fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}_{dl.suggested_filename or 'document.pdf'}"
+                    fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}.pdf"
                     save_path = os.path.join("sumac_documents", fname)
                     dl.save_as(save_path)
                     print(f"    Saved: {save_path}")
@@ -327,7 +332,15 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
 
     print(f"  Expediente {exp_idx + 1}: #{exp_number}")
     tiles.nth(exp_idx).click()
-    page.wait_for_timeout(3000)  # Wait for expediente detail to fully render
+    # Wait until the expediente detail renders (tab buttons or document container appear).
+    # Falls back to a short fixed wait if those selectors never show up.
+    try:
+        page.wait_for_selector(
+            "button[title='Documento'], button[title='Notificación'], .caseEntryDocumentContainer",
+            timeout=5000,
+        )
+    except Exception:
+        page.wait_for_timeout(1000)
 
     # Build the filename prefix: date first so files sort chronologically.
     date_prefix = f"{exp_date}_" if exp_date else ""
@@ -344,8 +357,7 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     # wait_for_selector ensures the expediente list is ready before the caller
     # tries to access the next tile index.
     page.go_back()
-    page.wait_for_timeout(3000)
-    page.wait_for_selector(".caseEntryTile__simpleView", timeout=3000)
+    page.wait_for_selector(".caseEntryTile__simpleView", timeout=5000)
 
 
 def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls):
@@ -529,11 +541,14 @@ def run():
         login_button.click()
 
         print("Login clicked. Checking for successful entry...")
+        time.sleep(20)
+
         # networkidle means no in-flight XHR requests for ≥500 ms — a good
         # signal that the post-login redirect has fully settled.
         page.wait_for_load_state("networkidle")
-
-        # Stay on the post-login landing page (notifications) — scraping starts here.
+        
+        # Stay on the import time
+        # post-login landing page (notifications) — scraping starts here.
         current_url = page.url
         print(f"Landing URL after login: {current_url}")
 
