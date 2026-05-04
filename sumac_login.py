@@ -523,6 +523,7 @@ def run():
     """
     username, password = read_credentials()
 
+   
     with sync_playwright() as p:
         # headless=False keeps the browser window open so behaviour is visible
         # and easier to debug when something goes wrong.
@@ -562,4 +563,7 @@ def run():
     # were likely rejected.
     if "signIn" in current_url:
         return "Login may have failed — still on sign-in page."
+
+
+
     return f"Login successful. Redirected to: {current_url}"

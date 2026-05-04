@@ -109,6 +109,7 @@ class SumacBotGUI(ctk.CTk):
             text=True,
             bufsize=1,
         )
+        
         for line in self._process.stdout:
             self.after(0, self._log, line)
         self._process.wait()
@@ -116,6 +117,11 @@ class SumacBotGUI(ctk.CTk):
 
     def _on_done(self):
         self._log("\n[Finished]\n")
+
+        import dropbox_sync2
+        dropbox_sync2.copy_files_to_dropbox_subfolders()
+        self._log("\n[Dropbox sync Done]\n")
+
         self._set_idle("Finished")
 
     def _set_idle(self, status_text: str):
@@ -141,5 +147,8 @@ class SumacBotGUI(ctk.CTk):
 
 
 if __name__ == "__main__":
+   
     app = SumacBotGUI()
+    
+
     app.mainloop()
