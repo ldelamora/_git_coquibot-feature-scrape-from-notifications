@@ -22,10 +22,55 @@ Usage examples:
 import re
 import shutil
 import argparse
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from pathlib import Path
 
 # Matches SUMAC case codes like FA2025CV00220 (2 letters, 4 digits, 2 letters, 5 digits)
 CASE_CODE_RE = re.compile(r'[A-Z]{2}\d{4}[A-Z]{2}\d{5}')
+
+# Email configuration — credentials are read from email.txt (gitignored).
+# Line 1: sender address  (coquibot.system@gmail.com)
+# Line 2: Gmail App Password  (generate at Google Account → Security → App Passwords)
+# Line 3: recipient address
+_EMAIL_SUBJECT = "New files from SUMAC downloaded"
+_SMTP_HOST     = "smtp.gmail.com"
+_SMTP_PORT     = 587
+
+
+def _read_email_config():
+    """Read sender, app-password and recipient from email.txt."""
+    config_path = Path(__file__).parent / "email.txt"
+    with open(config_path, encoding="utf-8") as f:
+        lines = [l.strip() for l in f.readlines()]
+    if len(lines) < 3:
+        raise ValueError("email.txt must have: line 1 = sender, line 2 = app password, line 3 = recipient")
+    return lines[0], lines[1], lines[2]
+
+
+def _send_email(new_files: list[str]) -> None:
+    """Send a notification email listing the newly copied files."""
+    email_from, app_password, email_to = _read_email_config()
+
+    body = "The following new files were transferred to Dropbox:\n\n"
+    body += "\n".join(f"  • {f}" for f in new_files)
+    body += f"\n\nTotal: {len(new_files)} file(s)."
+
+    msg = MIMEMultipart()
+    msg["From"]    = email_from
+    msg["To"]      = email_to
+    msg["Subject"] = _EMAIL_SUBJECT
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        with smtplib.SMTP(_SMTP_HOST, _SMTP_PORT) as server:
+            server.starttls()
+            server.login(email_from, app_password)
+            server.sendmail(email_from, email_to, msg.as_string())
+        print(f"📧 Email notification sent to {email_to}")
+    except Exception as e:
+        print(f"❌ Failed to send email notification: {e}")
 
 
 def get_case_code(filename):
@@ -100,6 +145,7 @@ def copy_files_to_dropbox_subfolders(source_folder=None, destination_folder=None
     skipped_count = 0
     no_code_count = 0
     unknown_count = 0
+    new_files = []
 
     for source_file in source_files:
         filename = source_file.name
@@ -139,6 +185,7 @@ def copy_files_to_dropbox_subfolders(source_folder=None, destination_folder=None
                 print(f"✅ Copied: {filename}")
                 print(f"       → {case_folder.name}/SUMAC/")
                 copied_count += 1
+                new_files.append(filename)
             except (shutil.Error, PermissionError, OSError) as e:
                 print(f"❌ Error copying {filename}: {e}")
 
@@ -150,6 +197,9 @@ def copy_files_to_dropbox_subfolders(source_folder=None, destination_folder=None
     print(f"  Files routed to UNKNOWN/:           {unknown_count}")
     print(f"  Total files processed:             {copied_count + skipped_count + no_code_count + unknown_count}")
     print("=" * 60)
+
+    if new_files:
+        _send_email(new_files)
 
 
 def preview_organization(source_folder=None, destination_folder=None):
