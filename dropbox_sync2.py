@@ -40,18 +40,29 @@ _SMTP_PORT     = 587
 
 
 def _read_email_config():
-    """Read sender, app-password and recipient from email.txt."""
+    """Read sender, app-password and recipient list from email.txt.
+
+    Line 1: sender address
+    Line 2: Gmail App Password
+    Line 3+: recipient addresses (one per line)
+    """
     config_path = Path(__file__).parent / "email.txt"
     with open(config_path, encoding="utf-8") as f:
         lines = [l.strip() for l in f.readlines()]
     if len(lines) < 3:
-        raise ValueError("email.txt must have: line 1 = sender, line 2 = app password, line 3 = recipient")
-    return lines[0], lines[1], lines[2]
+        raise ValueError("email.txt must have: line 1 = sender, line 2 = app password, line 3+ = recipients")
+    sender     = lines[0]
+    password   = lines[1]
+    recipients = [l for l in lines[2:] if l]
+    return sender, password, recipients
 
 
 def _send_email(new_files: list[str]) -> None:
     """Send a notification email listing the newly copied files."""
-    email_from, app_password, email_to = _read_email_config()
+    email_from, app_password, recipients = _read_email_config()
+    if not recipients:
+        print("⚠️  No recipients configured in email.txt — skipping notification.")
+        return
 
     body = "The following new files were transferred to Dropbox:\n\n"
     body += "\n".join(f"  • {f}" for f in new_files)
@@ -59,7 +70,7 @@ def _send_email(new_files: list[str]) -> None:
 
     msg = MIMEMultipart()
     msg["From"]    = email_from
-    msg["To"]      = email_to
+    msg["To"]      = ", ".join(recipients)
     msg["Subject"] = _EMAIL_SUBJECT
     msg.attach(MIMEText(body, "plain"))
 
@@ -67,8 +78,8 @@ def _send_email(new_files: list[str]) -> None:
         with smtplib.SMTP(_SMTP_HOST, _SMTP_PORT) as server:
             server.starttls()
             server.login(email_from, app_password)
-            server.sendmail(email_from, email_to, msg.as_string())
-        print(f"📧 Email notification sent to {email_to}")
+            server.sendmail(email_from, recipients, msg.as_string())
+        print(f"📧 Email notification sent to: {', '.join(recipients)}")
     except Exception as e:
         print(f"❌ Failed to send email notification: {e}")
 
