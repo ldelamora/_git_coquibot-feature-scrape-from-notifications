@@ -20,12 +20,18 @@ Usage examples:
 """
 
 import re
+import sys
 import shutil
 import argparse
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
+
+if getattr(sys, 'frozen', False):
+    _SCRIPT_DIR = Path(sys.executable).parent
+else:
+    _SCRIPT_DIR = Path(__file__).parent
 
 # Matches SUMAC case codes like FA2025CV00220 (2 letters, 4 digits, 2 letters, 5 digits)
 CASE_CODE_RE = re.compile(r'[A-Z]{2}\d{4}[A-Z]{2}\d{5}')
@@ -46,7 +52,7 @@ def _read_email_config():
     Line 2: Gmail App Password
     Line 3+: recipient addresses (one per line)
     """
-    config_path = Path(__file__).parent / "email.txt"
+    config_path = _SCRIPT_DIR / "email.txt"
     with open(config_path, encoding="utf-8") as f:
         lines = [l.strip() for l in f.readlines()]
     if len(lines) < 3:
@@ -121,8 +127,7 @@ def copy_files_to_dropbox_subfolders(source_folder=None, destination_folder=None
 
     # Set default paths if not provided
     if source_folder is None:
-        script_dir = Path(__file__).parent.absolute()
-        source_folder = script_dir / "sumac_documents"
+        source_folder = _SCRIPT_DIR / "sumac_documents"
 
     if destination_folder is None:
         destination_folder = Path(r"C:\Users\luisd\Dropbox\Coquibot")
@@ -220,8 +225,7 @@ def preview_organization(source_folder=None, destination_folder=None):
     """
 
     if source_folder is None:
-        script_dir = Path(__file__).parent.absolute()
-        source_folder = script_dir / "sumac_documents"
+        source_folder = _SCRIPT_DIR / "sumac_documents"
 
     if destination_folder is None:
         destination_folder = Path(r"C:\Users\luisd\Dropbox\Coquibot")
