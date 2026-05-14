@@ -188,14 +188,12 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls):
                 print(f"    Download button failed: {e}")
 
     # Strategy 2: any other download-triggering links/buttons
-    # These selectors cast a wide net: explicit download attributes, PDF hrefs,
-    # or any element whose class name suggests a download action.
-    for selector in ["a[download]", "a[href*='.pdf']", "[class*='download']"]:
+    for selector in ["a[download]", "a[href*='.pdf']"]:
         elems = page.locator(selector)
         if elems.count() > 0:
             for j in range(elems.count()):
                 try:
-                    with page.expect_download(timeout=3000) as dl_info:
+                    with page.expect_download(timeout=1000) as dl_info:
                         elems.nth(j).click()
                     dl = dl_info.value
                     #fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}_{dl.suggested_filename or 'document.pdf'}"
@@ -510,6 +508,20 @@ def scrape_all_pdfs(page):
     print("\nAll notifications processed.")
 
 
+# Holds the active browser instance so stop() can close it from outside.
+_active_browser = None
+
+
+def stop():
+    """Close the active browser, causing run() to exit immediately."""
+    global _active_browser
+    if _active_browser:
+        try:
+            _active_browser.close()
+        except Exception:
+            pass
+
+
 def run():
     """
     Main entry point called by the Flask /login route.
@@ -521,13 +533,14 @@ def run():
     Returns a human-readable status string that the Flask route forwards to the
     browser as JSON.  Raises on unrecoverable errors so Flask can return a 500.
     """
+    global _active_browser
     username, password = read_credentials()
 
-   
     with sync_playwright() as p:
         # headless=False keeps the browser window open so behaviour is visible
         # and easier to debug when something goes wrong.
         browser = p.chromium.launch(headless=False)
+        _active_browser = browser
         page = browser.new_page()
         page.goto(SUMAC_URL)
 
@@ -553,17 +566,22 @@ def run():
         current_url = page.url
         print(f"Landing URL after login: {current_url}")
 
-        scrape_all_pdfs(page)
+        try:
+            scrape_all_pdfs(page)
+        except Exception as e:
+            # TargetClosedError is raised when stop() closes the browser mid-run.
+            # Any files already downloaded are still synced to Dropbox below.
+            print(f"\n[Scraping ended early: {e.__class__.__name__}]")
 
-        # browser.close() is intentionally commented out so the user can
-        # inspect the final browser state after scraping completes.
-        #browser.close()
+    _active_browser = None
 
     # A simple heuristic: if we're still on the sign-in page the credentials
     # were likely rejected.
     if "signIn" in current_url:
         return "Login may have failed — still on sign-in page."
 
-
+    print("\nSyncing downloaded files to Dropbox…")
+    import dropbox_sync2
+    dropbox_sync2.copy_files_to_dropbox_subfolders()
 
     return f"Login successful. Redirected to: {current_url}"
