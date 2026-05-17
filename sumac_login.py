@@ -145,9 +145,11 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls):
         print(f"    [{tab_name}] Already downloaded, skipping.")
         return True
 
-    # Clear the shared URL buffer before clicking so we only capture URLs that
-    # result from this specific tab activation.
-    captured_pdf_urls.clear()
+    # Snapshot before clicking so Strategy 3 can tell new from pre-existing URLs.
+    # We do NOT clear here: if the expediente loaded Documento on open and SUMAC
+    # serves it from cache on re-click (no new network request), the pre-existing
+    # URL is the only way to save it.
+    urls_before_click = list(captured_pdf_urls)
     tab.first.click()
     page.wait_for_timeout(2000)  # Let the tab content load before inspecting DOM
 
@@ -206,17 +208,20 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls):
                     pass
 
     # Strategy 3: PDF URL intercepted from network traffic.
-    # If SUMAC loads the PDF inline (e.g. via PDF.js), no download event fires.
-    # Instead we fall back to the URLs collected by the response listener and
-    # fetch them manually using urllib with the session cookies.
-    if captured_pdf_urls:
-        for j, url in enumerate(list(captured_pdf_urls)):
-            fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}.pdf"
-            save_path = os.path.join("sumac_documents", fname)
-            print(f"    [{tab_name}] Saving intercepted PDF: {url}")
-            if _save_pdf_from_url(page, url, save_path):
-                print(f"    Saved: {save_path}")
-                return True
+    # Prefer URLs captured AFTER the tab click (fresh request). If none, fall
+    # back to pre-existing URLs — this covers the case where SUMAC serves the
+    # PDF from cache on re-click (e.g. Documento after Anejo interactions).
+    # The used URL is removed so it doesn't bleed into the next tab's fallback.
+    new_urls = [u for u in captured_pdf_urls if u not in urls_before_click]
+    urls_to_try = new_urls if new_urls else list(captured_pdf_urls)
+    for j, url in enumerate(urls_to_try):
+        fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}.pdf"
+        save_path = os.path.join("sumac_documents", fname)
+        print(f"    [{tab_name}] Saving intercepted PDF: {url}")
+        if _save_pdf_from_url(page, url, save_path):
+            captured_pdf_urls[:] = [u for u in captured_pdf_urls if u != url]
+            print(f"    Saved: {save_path}")
+            return True
 
     print(f"    [{tab_name}] No PDF found.")
     return False
@@ -343,6 +348,9 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     # Build the filename prefix: date first so files sort chronologically.
     date_prefix = f"{exp_date}_" if exp_date else ""
     filename_prefix = f"{date_prefix}[{exp_number}]_{case_number}"
+
+    # Fresh start for this expediente so stale URLs from previous ones don't leak in.
+    captured_pdf_urls.clear()
 
     # Check for Anejo (attachment) pills BEFORE clicking any tab, because the
     # pillbox may only be visible in the default expediente view.
