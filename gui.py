@@ -147,7 +147,7 @@ class SumacBotGUI(ctk.CTk):
         ctk.CTkLabel(
             tab, text="Dropbox Destination Folder",
             font=ctk.CTkFont(size=17, weight="bold"),
-        ).pack(pady=(16, 8))
+        ).pack(pady=(32, 8))
 
         dropbox_frame = ctk.CTkFrame(tab, fg_color="transparent")
         dropbox_frame.pack(pady=(0, 8))
