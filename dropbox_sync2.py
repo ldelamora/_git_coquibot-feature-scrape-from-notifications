@@ -40,9 +40,20 @@ CASE_CODE_RE = re.compile(r'[A-Z]{2}\d{4}[A-Z]{2}\d{5}')
 # Line 1: sender address  (coquibot.system@gmail.com)
 # Line 2: Gmail App Password  (generate at Google Account → Security → App Passwords)
 # Line 3: recipient address
-_EMAIL_SUBJECT = "New files from SUMAC downloaded"
-_SMTP_HOST     = "smtp.gmail.com"
-_SMTP_PORT     = 587
+_EMAIL_SUBJECT   = "New files from SUMAC downloaded"
+_SMTP_HOST       = "smtp.gmail.com"
+_SMTP_PORT       = 587
+_DROPBOX_DEFAULT = Path(r"C:\Users\luisd\Dropbox\Coquibot")
+
+
+def _read_dropbox_dest() -> Path:
+    """Read the Dropbox destination folder from config.txt, falling back to the default."""
+    config_path = _SCRIPT_DIR / "config.txt"
+    if config_path.exists():
+        stored = config_path.read_text(encoding="utf-8").strip()
+        if stored:
+            return Path(stored)
+    return _DROPBOX_DEFAULT
 
 
 def _read_email_config():
@@ -130,7 +141,7 @@ def copy_files_to_dropbox_subfolders(source_folder=None, destination_folder=None
         source_folder = _SCRIPT_DIR / "sumac_documents"
 
     if destination_folder is None:
-        destination_folder = Path(r"C:\Users\luisd\Dropbox\Coquibot")
+        destination_folder = _read_dropbox_dest()
 
     source_folder = Path(source_folder)
     destination_folder = Path(destination_folder)
@@ -228,7 +239,7 @@ def preview_organization(source_folder=None, destination_folder=None):
         source_folder = _SCRIPT_DIR / "sumac_documents"
 
     if destination_folder is None:
-        destination_folder = Path(r"C:\Users\luisd\Dropbox\Coquibot")
+        destination_folder = _read_dropbox_dest()
 
     source_folder = Path(source_folder)
     destination_folder = Path(destination_folder)

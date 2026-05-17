@@ -22,7 +22,8 @@ if getattr(sys, 'frozen', False):
 else:
     SCRIPT_DIR = Path(__file__).parent
 
-EMAIL_CONFIG = SCRIPT_DIR / "email.txt"
+EMAIL_CONFIG   = SCRIPT_DIR / "email.txt"
+DROPBOX_CONFIG = SCRIPT_DIR / "config.txt"
 
 # Default CTk blue — used to restore the Start button after a run.
 _CTK_BLUE       = ("#3B8ED0", "#1F6AA5")
@@ -121,7 +122,7 @@ class SumacBotGUI(ctk.CTk):
             font=ctk.CTkFont(size=17, weight="bold"),
         ).pack(pady=(24, 12))
 
-        self._recipients_frame = ctk.CTkScrollableFrame(tab, width=540, height=220)
+        self._recipients_frame = ctk.CTkScrollableFrame(tab, width=540, height=150)
         self._recipients_frame.pack(padx=16, pady=(0, 12))
 
         add_frame = ctk.CTkFrame(tab, fg_color="transparent")
@@ -142,6 +143,27 @@ class SumacBotGUI(ctk.CTk):
         ).pack(side="left")
 
         self._refresh_recipient_list()
+
+        ctk.CTkLabel(
+            tab, text="Dropbox Destination Folder",
+            font=ctk.CTkFont(size=17, weight="bold"),
+        ).pack(pady=(16, 8))
+
+        dropbox_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        dropbox_frame.pack(pady=(0, 8))
+
+        self._dropbox_entry = ctk.CTkEntry(
+            dropbox_frame, width=380,
+            font=ctk.CTkFont(size=13),
+        )
+        self._dropbox_entry.insert(0, self._read_dropbox_path())
+        self._dropbox_entry.pack(side="left", padx=(0, 10))
+
+        ctk.CTkButton(
+            dropbox_frame, text="Save", width=110, height=36,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            command=self._save_dropbox_path,
+        ).pack(side="left")
 
     def _read_recipients(self) -> list[str]:
         if not EMAIL_CONFIG.exists():
@@ -197,6 +219,18 @@ class SumacBotGUI(ctk.CTk):
         self._write_recipients(current + [email])
         self._add_recipient_row(email)
         self._new_email_entry.delete(0, "end")
+
+    def _read_dropbox_path(self) -> str:
+        if DROPBOX_CONFIG.exists():
+            path = DROPBOX_CONFIG.read_text(encoding="utf-8").strip()
+            if path:
+                return path
+        return r"C:\Users\luisd\Dropbox\Coquibot"
+
+    def _save_dropbox_path(self) -> None:
+        path = self._dropbox_entry.get().strip()
+        if path:
+            DROPBOX_CONFIG.write_text(path, encoding="utf-8")
 
     # ── Bot tab handlers ──────────────────────────────────────────────────────
 
