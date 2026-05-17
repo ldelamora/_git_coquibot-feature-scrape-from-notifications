@@ -290,6 +290,8 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls):
             fname = f"{filename_prefix}_anejo_{j + 1}{label_part}_{base}"
             save_path = os.path.join("sumac_documents", fname)
             dl.save_as(save_path)
+            # Remove any URLs captured during this click so they don't leak into tab fallbacks.
+            captured_pdf_urls[:] = [u for u in captured_pdf_urls if u in urls_before]
             print(f"    [Anejo] Saved: {save_path}")
             continue
         except Exception:
@@ -310,6 +312,8 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls):
             save_path = os.path.join("sumac_documents", fname)
             print(f"    [Anejo] Saving intercepted PDF: {url}")
             if _save_pdf_from_url(page, url, save_path):
+                # Consume the URL so it can't bleed into Documento/Notificación fallbacks.
+                captured_pdf_urls[:] = [u for u in captured_pdf_urls if u != url]
                 print(f"    [Anejo] Saved: {save_path}")
                 continue
 
