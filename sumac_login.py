@@ -149,7 +149,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls):
     # result from this specific tab activation.
     captured_pdf_urls.clear()
     tab.first.click()
-    page.wait_for_timeout(4000)  # Let the tab content load before inspecting DOM
+    page.wait_for_timeout(2000)  # Let the tab content load before inspecting DOM
 
     # Read the document title shown in the tab header (h1 inside the document
     # header container).  Prefer the title attribute; fall back to inner text.
@@ -174,7 +174,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls):
                 print(f"    [{tab_name}] Clicking download button {j+1}...")
                 # expect_download() intercepts the file-download dialog that
                 # Playwright would otherwise handle silently.
-                with page.expect_download(timeout=3000) as dl_info:
+                with page.expect_download(timeout=1000) as dl_info:
                     dl_btn.nth(j).click()
                 dl = dl_info.value
                 #fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}_{dl.suggested_filename or 'document.pdf'}"
