@@ -1,0 +1,9 @@
+pyinstaller --onefile --windowed `                            
+>>   --add-data "sumac.txt;." `                                                                
+>>   --add-data "email.txt;." `                                                                
+>>   --collect-all customtkinter `
+>>   --hidden-import sumac_login `
+>>   --hidden-import dropbox_sync2 `
+>>   --hidden-import playwright `
+>>   --hidden-import playwright.sync_api `
+>>   gui.py

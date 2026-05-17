@@ -4,7 +4,7 @@ gui.py — Desktop launcher for SUMAC BOT.
 Replaces the Flask web UI.  Run with:  python gui.py
 """
 
-import subprocess
+import io
 import sys
 import threading
 from pathlib import Path
@@ -14,12 +14,39 @@ import customtkinter as ctk
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-SCRIPT_DIR   = Path(__file__).parent
+# When frozen by PyInstaller, write persistent files next to the .exe.
+# __file__ points to a temp folder that is wiped on exit, so it cannot
+# be used for files the user needs to persist across runs.
+if getattr(sys, 'frozen', False):
+    SCRIPT_DIR = Path(sys.executable).parent
+else:
+    SCRIPT_DIR = Path(__file__).parent
+
 EMAIL_CONFIG = SCRIPT_DIR / "email.txt"
 
 # Default CTk blue — used to restore the Start button after a run.
 _CTK_BLUE       = ("#3B8ED0", "#1F6AA5")
 _CTK_BLUE_HOVER = ("#36719F", "#144870")
+
+
+class _LogRedirect(io.TextIOBase):
+    """Forwards print() / stderr output from the worker thread to the GUI log.
+
+    Uses tkinter's after() so all GUI writes happen on the main thread, which
+    is required by Tk.  Works whether running as a plain script or a frozen
+    PyInstaller executable (no subprocess needed).
+    """
+    def __init__(self, after_fn, log_fn):
+        self._after = after_fn
+        self._log   = log_fn
+
+    def write(self, text):
+        if text:
+            self._after(0, self._log, text)
+        return len(text)
+
+    def flush(self):
+        pass
 
 
 class SumacBotGUI(ctk.CTk):
@@ -29,8 +56,6 @@ class SumacBotGUI(ctk.CTk):
         self.title("SUMAC BOT")
         self.geometry("640x600")
         self.resizable(False, False)
-
-        self._process: subprocess.Popen | None = None
 
         self.tabview = ctk.CTkTabview(self, width=620)
         self.tabview.pack(fill="both", expand=True, padx=10, pady=10)
@@ -96,11 +121,9 @@ class SumacBotGUI(ctk.CTk):
             font=ctk.CTkFont(size=17, weight="bold"),
         ).pack(pady=(24, 12))
 
-        # Scrollable list of current recipients
         self._recipients_frame = ctk.CTkScrollableFrame(tab, width=540, height=220)
         self._recipients_frame.pack(padx=16, pady=(0, 12))
 
-        # Add-new-email row
         add_frame = ctk.CTkFrame(tab, fg_color="transparent")
         add_frame.pack(pady=(0, 8))
 
@@ -121,7 +144,6 @@ class SumacBotGUI(ctk.CTk):
         self._refresh_recipient_list()
 
     def _read_recipients(self) -> list[str]:
-        """Return recipient addresses from lines 3+ of email.txt."""
         if not EMAIL_CONFIG.exists():
             return []
         with open(EMAIL_CONFIG, encoding="utf-8") as f:
@@ -129,18 +151,15 @@ class SumacBotGUI(ctk.CTk):
         return [l for l in lines[2:] if l]
 
     def _write_recipients(self, recipients: list[str]) -> None:
-        """Overwrite lines 3+ of email.txt with the new recipient list."""
         if not EMAIL_CONFIG.exists():
             return
         with open(EMAIL_CONFIG, encoding="utf-8") as f:
             lines = [l.rstrip("\n") for l in f.readlines()]
-        # Keep sender (line 0) and app password (line 1) untouched.
         new_content = "\n".join(lines[:2] + recipients) + "\n"
         with open(EMAIL_CONFIG, "w", encoding="utf-8") as f:
             f.write(new_content)
 
     def _refresh_recipient_list(self) -> None:
-        """Rebuild the scrollable recipient list from email.txt."""
         for widget in self._recipients_frame.winfo_children():
             widget.destroy()
         for email in self._read_recipients():
@@ -158,8 +177,7 @@ class SumacBotGUI(ctk.CTk):
 
         def _remove(e=email, r=row):
             r.destroy()
-            updated = [x for x in self._read_recipients() if x != e]
-            self._write_recipients(updated)
+            self._write_recipients([x for x in self._read_recipients() if x != e])
 
         ctk.CTkButton(
             row, text="Remove", width=84, height=28,
@@ -196,25 +214,27 @@ class SumacBotGUI(ctk.CTk):
         threading.Thread(target=self._run_bot, daemon=True).start()
 
     def _stop(self):
-        if self._process and self._process.poll() is None:
-            self._process.terminate()
-            self._log("\n[Stopped by user]\n")
+        self._log("\n[Stopping…]\n")
+        import sumac_login
+        sumac_login.stop()
         self._set_idle("Stopped")
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _run_bot(self):
-        self._process = subprocess.Popen(
-            [sys.executable, "-c", "import sumac_login; sumac_login.run()"],
-            cwd=str(SCRIPT_DIR),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        for line in self._process.stdout:
-            self.after(0, self._log, line)
-        self._process.wait()
+        import sumac_login   # imported here so PyInstaller bundles it correctly
+
+        redirector = _LogRedirect(self.after, self._log)
+        old_out, old_err = sys.stdout, sys.stderr
+        sys.stdout = sys.stderr = redirector
+
+        try:
+            sumac_login.run()
+        except Exception as e:
+            self.after(0, self._log, f"\n[Error: {e}]\n")
+        finally:
+            sys.stdout, sys.stderr = old_out, old_err
+
         self.after(0, self._on_done)
 
     def _on_done(self):
