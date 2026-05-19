@@ -19,6 +19,7 @@ Usage examples:
   python dropbox_sync2.py --source "C:\\docs" --preview            # preview + custom source
 """
 
+import datetime
 import re
 import sys
 import shutil
@@ -44,6 +45,7 @@ _EMAIL_SUBJECT   = "New files from SUMAC downloaded"
 _SMTP_HOST       = "smtp.gmail.com"
 _SMTP_PORT       = 587
 _DROPBOX_DEFAULT = Path(r"C:\Users\luisd\Dropbox\Coquibot")
+_DROPBOX_LOG     = _SCRIPT_DIR / "dropboxLog.txt"
 
 
 def _read_dropbox_dest() -> Path:
@@ -54,6 +56,18 @@ def _read_dropbox_dest() -> Path:
         if stored:
             return Path(stored)
     return _DROPBOX_DEFAULT
+
+
+def _write_dropbox_log(new_files: list[str]) -> None:
+    """Append a dated batch entry to dropboxLog.txt for every file sent to Dropbox."""
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        "",
+        timestamp,
+        "",
+    ] + new_files + [""]
+    with open(_DROPBOX_LOG, "a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 def _read_email_config():
@@ -226,6 +240,7 @@ def copy_files_to_dropbox_subfolders(source_folder=None, destination_folder=None
     print("=" * 60)
 
     if new_files:
+        _write_dropbox_log(new_files)
         _send_email(new_files)
 
 
