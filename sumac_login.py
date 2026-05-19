@@ -168,51 +168,51 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls):
 
     title_part = f" - {doc_title}" if doc_title else ""
 
-    # Strategy 1: dedicated download button (.caseEntriesView__downloadButton)
-    dl_btn = page.locator(".caseEntriesView__downloadButton")
-    if dl_btn.count() > 0:
-        for j in range(dl_btn.count()):
-            try:
-                print(f"    [{tab_name}] Clicking download button {j+1}...")
-                # expect_download() intercepts the file-download dialog that
-                # Playwright would otherwise handle silently.
-                with page.expect_download(timeout=1000) as dl_info:
-                    dl_btn.nth(j).click()
-                dl = dl_info.value
-                #fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}_{dl.suggested_filename or 'document.pdf'}"
-                fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}.pdf"
-                    
-                save_path = os.path.join("sumac_documents", fname)
-                dl.save_as(save_path)
-                print(f"    Saved: {save_path}")
-                return True
-            except Exception as e:
-                print(f"    Download button failed: {e}")
-
-    # Strategy 2: any other download-triggering links/buttons
-    for selector in ["a[download]", "a[href*='.pdf']"]:
-        elems = page.locator(selector)
-        if elems.count() > 0:
-            for j in range(elems.count()):
+    # Fast path: if the PDF was already captured by the network listener during
+    # the 2s wait, skip Strategy 1 & 2 entirely and go straight to Strategy 3.
+    # This avoids burning 1s timeouts when the PDF renders inline (the common case).
+    new_urls_after_wait = [u for u in captured_pdf_urls if u not in urls_before_click]
+    if not new_urls_after_wait:
+        # Strategy 1: dedicated download button (.caseEntriesView__downloadButton)
+        dl_btn = page.locator(".caseEntriesView__downloadButton")
+        if dl_btn.count() > 0:
+            for j in range(dl_btn.count()):
                 try:
+                    print(f"    [{tab_name}] Clicking download button {j+1}...")
                     with page.expect_download(timeout=1000) as dl_info:
-                        elems.nth(j).click()
+                        dl_btn.nth(j).click()
                     dl = dl_info.value
-                    #fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}_{dl.suggested_filename or 'document.pdf'}"
                     fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}.pdf"
                     save_path = os.path.join("sumac_documents", fname)
                     dl.save_as(save_path)
                     print(f"    Saved: {save_path}")
                     return True
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"    Download button failed: {e}")
+
+        # Strategy 2: any other download-triggering links/buttons
+        for selector in ["a[download]", "a[href*='.pdf']"]:
+            elems = page.locator(selector)
+            if elems.count() > 0:
+                for j in range(elems.count()):
+                    try:
+                        with page.expect_download(timeout=1000) as dl_info:
+                            elems.nth(j).click()
+                        dl = dl_info.value
+                        fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}.pdf"
+                        save_path = os.path.join("sumac_documents", fname)
+                        dl.save_as(save_path)
+                        print(f"    Saved: {save_path}")
+                        return True
+                    except Exception:
+                        pass
 
     # Strategy 3: PDF URL intercepted from network traffic.
     # Prefer URLs captured AFTER the tab click (fresh request). If none, fall
     # back to pre-existing URLs — this covers the case where SUMAC serves the
     # PDF from cache on re-click (e.g. Documento after Anejo interactions).
     # The used URL is removed so it doesn't bleed into the next tab's fallback.
-    new_urls = [u for u in captured_pdf_urls if u not in urls_before_click]
+    new_urls = new_urls_after_wait or [u for u in captured_pdf_urls if u not in urls_before_click]
     urls_to_try = new_urls if new_urls else list(captured_pdf_urls)
     for j, url in enumerate(urls_to_try):
         fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}.pdf"
