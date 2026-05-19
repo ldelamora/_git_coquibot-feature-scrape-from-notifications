@@ -488,6 +488,12 @@ def scrape_all_pdfs(page):
         print(f"Notification tiles never appeared: {e}")
         return
 
+    # Also wait for the bottom-left panel (second tile list) to load.
+    try:
+        page.wait_for_selector(".home__bottomLeftPanel .courtNotificationsBox__tile", timeout=5000)
+    except Exception:
+        pass  # Panel may be empty or not present — continue with whatever loaded
+
     # Snapshot case numbers before entering the navigation loop.
     # Notification tiles use two different BEM variants depending on the document type.
     tiles = page.locator(".courtNotificationsBox__tile")
