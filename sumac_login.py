@@ -49,33 +49,38 @@ def _save_pdf_from_url(page, url, save_path):
     """
     Download a PDF and save it to `save_path`.  Returns True on success.
 
-    Handles two URL schemes:
-    - blob:  — in-memory object URLs created by the browser (e.g. PDF.js blobs).
-              These cannot be fetched by urllib; we use page.evaluate() to read
-              the bytes from inside the browser context and return them as base64.
-    - http/https — fetched via urllib with the session cookies forwarded so the
-                   server recognises the authenticated session.
+    For both blob: and http/https URLs we use page.evaluate() with fetch() so
+    the browser's HTTP cache is consulted first — PDFs that are already open in
+    the viewer are returned instantly from cache rather than re-downloaded.
+    urllib is kept as a fallback in case the in-browser fetch fails.
     """
     import base64
 
-    if url.startswith("blob:"):
-        try:
-            # Read the blob from inside the browser, encode as base64, decode in Python.
-            b64 = page.evaluate("""async (blobUrl) => {
-                const resp = await fetch(blobUrl);
-                const buf  = await resp.arrayBuffer();
-                const bytes = new Uint8Array(buf);
-                let binary = '';
-                for (let i = 0; i < bytes.byteLength; i++)
-                    binary += String.fromCharCode(bytes[i]);
-                return btoa(binary);
-            }""", url)
+    # Chunked base64 helper avoids JS call-stack overflow on large PDFs.
+    _JS_FETCH = """async (url) => {
+        try {
+            const resp = await fetch(url, {credentials: 'include'});
+            if (!resp.ok) return null;
+            const bytes = new Uint8Array(await resp.arrayBuffer());
+            let bin = '';
+            const CHUNK = 65536;
+            for (let i = 0; i < bytes.length; i += CHUNK)
+                bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+            return btoa(bin);
+        } catch(e) { return null; }
+    }"""
+
+    try:
+        b64 = page.evaluate(_JS_FETCH, url)
+        if b64:
             with open(save_path, "wb") as f:
                 f.write(base64.b64decode(b64))
             return True
-        except Exception as e:
-            print(f"    blob fetch failed for {url}: {e}")
-        return False
+    except Exception as e:
+        print(f"    browser fetch failed for {url}: {e}")
+
+    if url.startswith("blob:"):
+        return False  # blob URLs can't be fetched outside the browser
 
     try:
         req = urllib.request.Request(url, headers={"Cookie": _cookie_header(page)})
@@ -151,7 +156,12 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls):
     # URL is the only way to save it.
     urls_before_click = list(captured_pdf_urls)
     tab.first.click()
-    page.wait_for_timeout(2000)  # Let the tab content load before inspecting DOM
+    # Poll every 200ms instead of a fixed 2s wait — exits as soon as a PDF URL
+    # is captured, which is usually within one or two ticks for cached PDFs.
+    for _ in range(10):
+        page.wait_for_timeout(200)
+        if any(u not in urls_before_click for u in captured_pdf_urls):
+            break
 
     # Read the document title shown in the tab header (h1 inside the document
     # header container).  Prefer the title attribute; fall back to inner text.
