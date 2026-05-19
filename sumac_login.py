@@ -45,43 +45,42 @@ def _cookie_header(page):
     return "; ".join(f"{c['name']}={c['value']}" for c in cookies)
 
 
-def _save_pdf_from_url(page, url, save_path):
+def _save_pdf_from_url(page, url, save_path, pdf_data_cache=None):
     """
-    Download a PDF and save it to `save_path`.  Returns True on success.
+    Save a PDF to `save_path`.  Returns True on success.
 
-    For both blob: and http/https URLs we use page.evaluate() with fetch() so
-    the browser's HTTP cache is consulted first — PDFs that are already open in
-    the viewer are returned instantly from cache rather than re-downloaded.
-    urllib is kept as a fallback in case the in-browser fetch fails.
+    Checks `pdf_data_cache` first — bytes captured at response time require no
+    second network request and work even for one-time-token URLs.  Falls back to
+    a blob: in-browser read, then urllib for plain HTTP URLs.
     """
     import base64
 
-    # Chunked base64 helper avoids JS call-stack overflow on large PDFs.
-    _JS_FETCH = """async (url) => {
-        try {
-            const resp = await fetch(url, {credentials: 'include'});
-            if (!resp.ok) return null;
-            const bytes = new Uint8Array(await resp.arrayBuffer());
-            let bin = '';
-            const CHUNK = 65536;
-            for (let i = 0; i < bytes.length; i += CHUNK)
-                bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
-            return btoa(bin);
-        } catch(e) { return null; }
-    }"""
+    # Primary: bytes already captured when the network response first arrived.
+    if pdf_data_cache and url in pdf_data_cache:
+        with open(save_path, "wb") as f:
+            f.write(pdf_data_cache[url])
+        return True
 
-    try:
-        b64 = page.evaluate(_JS_FETCH, url)
-        if b64:
+    # Blob URLs live only in the browser — read them via page.evaluate().
+    if url.startswith("blob:"):
+        try:
+            b64 = page.evaluate("""async (blobUrl) => {
+                const resp = await fetch(blobUrl);
+                const buf  = await resp.arrayBuffer();
+                const bytes = new Uint8Array(buf);
+                let binary = '';
+                for (let i = 0; i < bytes.byteLength; i++)
+                    binary += String.fromCharCode(bytes[i]);
+                return btoa(binary);
+            }""", url)
             with open(save_path, "wb") as f:
                 f.write(base64.b64decode(b64))
             return True
-    except Exception as e:
-        print(f"    browser fetch failed for {url}: {e}")
+        except Exception as e:
+            print(f"    blob fetch failed for {url}: {e}")
+        return False
 
-    if url.startswith("blob:"):
-        return False  # blob URLs can't be fetched outside the browser
-
+    # Last resort: urllib re-download (slow; may fail for one-time-token URLs).
     try:
         req = urllib.request.Request(url, headers={"Cookie": _cookie_header(page)})
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -123,7 +122,7 @@ def _parse_date_es(text):
     return ""
 
 
-def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls):
+def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captured_pdf_data):
     """
     Click a tab inside an expediente detail view and attempt to save any PDF
     it contains.  Three strategies are tried in order of preference:
@@ -228,8 +227,9 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls):
         fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}.pdf"
         save_path = os.path.join("sumac_documents", fname)
         print(f"    [{tab_name}] Saving intercepted PDF: {url}")
-        if _save_pdf_from_url(page, url, save_path):
+        if _save_pdf_from_url(page, url, save_path, captured_pdf_data):
             captured_pdf_urls[:] = [u for u in captured_pdf_urls if u != url]
+            captured_pdf_data.pop(url, None)
             print(f"    Saved: {save_path}")
             return True
 
@@ -237,7 +237,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls):
     return False
 
 
-def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls):
+def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captured_pdf_data):
     """
     Download all PDFs attached as "Anejo" pills inside an expediente detail view.
 
@@ -301,6 +301,9 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls):
             save_path = os.path.join("sumac_documents", fname)
             dl.save_as(save_path)
             # Remove any URLs captured during this click so they don't leak into tab fallbacks.
+            new_captured = [u for u in captured_pdf_urls if u not in urls_before]
+            for u in new_captured:
+                captured_pdf_data.pop(u, None)
             captured_pdf_urls[:] = [u for u in captured_pdf_urls if u in urls_before]
             print(f"    [Anejo] Saved: {save_path}")
             continue
@@ -321,16 +324,17 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls):
             fname = f"{filename_prefix}_anejo_{j + 1}{label_part}.pdf"
             save_path = os.path.join("sumac_documents", fname)
             print(f"    [Anejo] Saving intercepted PDF: {url}")
-            if _save_pdf_from_url(page, url, save_path):
+            if _save_pdf_from_url(page, url, save_path, captured_pdf_data):
                 # Consume the URL so it can't bleed into Documento/Notificación fallbacks.
                 captured_pdf_urls[:] = [u for u in captured_pdf_urls if u != url]
+                captured_pdf_data.pop(url, None)
                 print(f"    [Anejo] Saved: {save_path}")
                 continue
 
         print(f"    [Anejo] Could not save attachment {j + 1}.")
 
 
-def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captured_pdf_urls):
+def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captured_pdf_urls, captured_pdf_data):
     """
     Level 3: click an expediente tile, check Documento/Notificación tabs,
     then go back to the case detail view (Level 2).
@@ -339,6 +343,7 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     exp_number   — human-readable expediente number (used in saved filenames).
     captured_pdf_urls — shared list populated by the network response listener;
                         passed into each tab handler so Strategy 3 can use it.
+    captured_pdf_data — dict of url→bytes captured at response time; avoids re-download.
     """
     # Re-query tiles here because navigating back from a previous expediente
     # can trigger a DOM refresh, potentially invalidating stale locators.
@@ -365,13 +370,14 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
 
     # Fresh start for this expediente so stale URLs from previous ones don't leak in.
     captured_pdf_urls.clear()
+    captured_pdf_data.clear()
 
     # Check for Anejo (attachment) pills BEFORE clicking any tab, because the
     # pillbox may only be visible in the default expediente view.
-    _download_anejo_attachments(page, filename_prefix, captured_pdf_urls)
+    _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captured_pdf_data)
 
     for tab_name in TABS_TO_CHECK:
-        _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls)
+        _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captured_pdf_data)
 
     # Return to case detail (Level 2) using browser history.
     # wait_for_selector ensures the expediente list is ready before the caller
@@ -380,7 +386,7 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     page.wait_for_selector(".caseEntryTile__simpleView", timeout=5000)
 
 
-def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls):
+def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, captured_pdf_data):
     """
     Level 2: click a case tile to open its detail view, iterate over every
     expediente inside it, then navigate back to the cases list (Level 1).
@@ -441,7 +447,7 @@ def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls):
 
     for i, exp_number in enumerate(exp_numbers[:3]):
         try:
-            _process_expediente(page, i, case_number, exp_number, exp_dates[i], captured_pdf_urls)
+            _process_expediente(page, i, case_number, exp_number, exp_dates[i], captured_pdf_urls, captured_pdf_data)
         except Exception as e:
             print(f"  Error on expediente {exp_number}: {e}")
             # Attempt to recover to case detail so remaining expedientes can
@@ -499,9 +505,14 @@ def scrape_all_pdfs(page):
     print(f"Found {tile_count} notifications: {case_numbers}")
 
     captured_pdf_urls = []
+    captured_pdf_data = {}  # url → bytes captured at response time
 
     def on_response(response):
-        """Intercept every HTTP response and record URLs that look like PDFs."""
+        """Intercept every HTTP response and record URLs that look like PDFs.
+
+        Also captures the response body immediately so Strategy 3 never needs to
+        make a second network request — critical for one-time-token PDF URLs.
+        """
         ct = response.headers.get("content-type", "")
         url = response.url.lower()
         if url.startswith("chrome-extension://"):
@@ -509,6 +520,12 @@ def scrape_all_pdfs(page):
         if "pdf" in ct.lower() or url.endswith(".pdf") or "pdf" in url:
             print(f"  [network] PDF detected: {response.url}")
             captured_pdf_urls.append(response.url)
+            try:
+                data = response.body()
+                if data:
+                    captured_pdf_data[response.url] = data
+            except Exception:
+                pass  # Body unavailable; urllib fallback will handle it
 
     page.on("response", on_response)
 
@@ -519,7 +536,7 @@ def scrape_all_pdfs(page):
             print(f"  Skipping {case_number} (already processed this run).")
             continue
         try:
-            _process_case(page, i, case_number, landing_url, captured_pdf_urls)
+            _process_case(page, i, case_number, landing_url, captured_pdf_urls, captured_pdf_data)
             processed_cases.add(case_number)
         except Exception as e:
             print(f"Error on notification {case_number}: {e}")
