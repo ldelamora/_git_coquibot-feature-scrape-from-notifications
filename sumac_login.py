@@ -113,13 +113,13 @@ MESES = {
 
 
 def _wait_for_all_tiles(page, timeout=5000):
-    """Wait for both the top notification tiles and the bottom-left 'Mis Casos' tiles."""
+    """Wait for both the top notification tiles and the bottom-left panel tiles."""
     try:
         page.wait_for_selector(".courtNotificationsBox__tile", timeout=timeout)
     except Exception:
         pass
     try:
-        page.wait_for_selector(".home__bottomLeftPanel .caseTile__view", timeout=timeout)
+        page.wait_for_selector(".home__bottomLeftPanel .courtNotificationsBox__tile", timeout=timeout)
     except Exception:
         pass  # Bottom panel may be empty — not an error
 
@@ -504,13 +504,15 @@ def scrape_all_pdfs(page):
 
     # ── Snapshot both panels before any navigation ────────────────────────────
 
-    # Bottom-left "Mis Casos" panel (.caseTile__view tiles)
-    bottom_tiles = page.locator(".home__bottomLeftPanel .caseTile__view")
+    # Bottom-left "Mis Casos" panel (also uses .courtNotificationsBox__tile, scoped to .home__bottomLeftPanel)
+    bottom_tiles = page.locator(".home__bottomLeftPanel .courtNotificationsBox__tile")
     bottom_count = bottom_tiles.count()
     bottom_case_numbers = []
     for i in range(bottom_count):
         try:
-            num = bottom_tiles.nth(i).locator(".caseTile__caseNumber").first.inner_text(timeout=2000).strip()
+            num = bottom_tiles.nth(i).locator(
+                ".notificationTile__caseNumber, .notificationRecourseTile__recourseNumber"
+            ).first.inner_text(timeout=2000).strip()
         except Exception:
             num = f"miscase{i:03d}"
         bottom_case_numbers.append(num)
@@ -566,7 +568,7 @@ def scrape_all_pdfs(page):
             _process_case(
                 page, i, case_number, landing_url,
                 captured_pdf_urls, captured_pdf_data,
-                tile_selector=".home__bottomLeftPanel .caseTile__view",
+                tile_selector=".home__bottomLeftPanel .courtNotificationsBox__tile",
                 label="Case",
             )
             processed_cases.add(case_number)
