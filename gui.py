@@ -4,9 +4,11 @@ gui.py — Desktop launcher for SUMAC BOT.
 Replaces the Flask web UI.  Run with:  python gui.py
 """
 
+import datetime
 import io
 import sys
 import threading
+import time
 from pathlib import Path
 
 import customtkinter as ctk
@@ -22,8 +24,9 @@ if getattr(sys, 'frozen', False):
 else:
     SCRIPT_DIR = Path(__file__).parent
 
-EMAIL_CONFIG   = SCRIPT_DIR / "email.txt"
-DROPBOX_CONFIG = SCRIPT_DIR / "config.txt"
+EMAIL_CONFIG    = SCRIPT_DIR / "email.txt"
+DROPBOX_CONFIG  = SCRIPT_DIR / "config.txt"
+SCHEDULE_CONFIG = SCRIPT_DIR / "schedule.txt"
 
 # Default CTk blue — used to restore the Start button after a run.
 _CTK_BLUE       = ("#3B8ED0", "#1F6AA5")
@@ -58,14 +61,20 @@ class SumacBotGUI(ctk.CTk):
         self.geometry("640x600")
         self.resizable(False, False)
 
+        self._bot_running = False
+
         self.tabview = ctk.CTkTabview(self, width=620)
         self.tabview.pack(fill="both", expand=True, padx=10, pady=10)
 
         self.tabview.add("Bot")
         self.tabview.add("Settings")
+        self.tabview.add("Scheduler")
 
         self._build_bot_tab()
         self._build_settings_tab()
+        self._build_scheduler_tab()
+
+        threading.Thread(target=self._scheduler_thread, daemon=True).start()
 
     # ── Bot tab ───────────────────────────────────────────────────────────────
 
@@ -235,6 +244,7 @@ class SumacBotGUI(ctk.CTk):
     # ── Bot tab handlers ──────────────────────────────────────────────────────
 
     def _start(self):
+        self._bot_running = True
         self.start_btn.configure(
             text="⏳   Running…",
             fg_color="#CA6F1E", hover_color="#CA6F1E",
@@ -276,6 +286,7 @@ class SumacBotGUI(ctk.CTk):
         self._set_idle("Finished")
 
     def _set_idle(self, status_text: str):
+        self._bot_running = False
         self.start_btn.configure(
             text="▶   Start",
             fg_color=_CTK_BLUE,
@@ -295,6 +306,145 @@ class SumacBotGUI(ctk.CTk):
         self.log_box.configure(state="normal")
         self.log_box.delete("1.0", "end")
         self.log_box.configure(state="disabled")
+
+
+    # ── Scheduler tab ─────────────────────────────────────────────────────────
+
+    def _build_scheduler_tab(self):
+        tab = self.tabview.tab("Scheduler")
+
+        ctk.CTkLabel(
+            tab, text="Scheduled Auto-Start",
+            font=ctk.CTkFont(size=17, weight="bold"),
+        ).pack(pady=(24, 4))
+
+        ctk.CTkLabel(
+            tab, text="Bot starts automatically at the enabled times (24-hour HH:MM).",
+            font=ctk.CTkFont(size=13),
+            text_color="gray",
+        ).pack(pady=(0, 18))
+
+        self._schedule_entries  = []
+        self._schedule_switches = []
+
+        for i in range(3):
+            row = ctk.CTkFrame(tab, fg_color=("gray85", "gray20"), corner_radius=8)
+            row.pack(fill="x", padx=40, pady=6)
+
+            sw = ctk.CTkSwitch(
+                row, text=f"  Slot {i + 1}",
+                font=ctk.CTkFont(size=14),
+                width=110,
+            )
+            sw.pack(side="left", padx=(16, 12), pady=14)
+            self._schedule_switches.append(sw)
+
+            entry = ctk.CTkEntry(
+                row, width=90, placeholder_text="HH:MM",
+                font=ctk.CTkFont(size=14),
+            )
+            entry.pack(side="left", padx=(0, 16), pady=14)
+            self._schedule_entries.append(entry)
+
+        ctk.CTkButton(
+            tab, text="Save Schedule", width=180, height=40,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            command=self._save_schedule,
+        ).pack(pady=(22, 8))
+
+        self._scheduler_status = ctk.CTkLabel(
+            tab, text="No active schedule.",
+            font=ctk.CTkFont(size=13),
+            text_color="gray",
+        )
+        self._scheduler_status.pack()
+
+        self._load_schedule()
+
+    def _load_schedule(self) -> None:
+        if not SCHEDULE_CONFIG.exists():
+            return
+        lines = SCHEDULE_CONFIG.read_text(encoding="utf-8").strip().splitlines()
+        for i, line in enumerate(lines[:3]):
+            parts = line.split(",")
+            if len(parts) >= 2:
+                self._schedule_entries[i].delete(0, "end")
+                self._schedule_entries[i].insert(0, parts[0].strip())
+                if parts[1].strip() == "1":
+                    self._schedule_switches[i].select()
+                else:
+                    self._schedule_switches[i].deselect()
+        self._refresh_scheduler_status()
+
+    def _save_schedule(self) -> None:
+        lines = []
+        for i in range(3):
+            raw = self._schedule_entries[i].get().strip()
+            try:
+                datetime.datetime.strptime(raw, "%H:%M")
+                time_str = raw
+            except ValueError:
+                time_str = ""
+                self._schedule_entries[i].delete(0, "end")
+            enabled = "1" if self._schedule_switches[i].get() else "0"
+            lines.append(f"{time_str},{enabled}")
+        SCHEDULE_CONFIG.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self._refresh_scheduler_status()
+
+    def _refresh_scheduler_status(self) -> None:
+        active = []
+        if SCHEDULE_CONFIG.exists():
+            for line in SCHEDULE_CONFIG.read_text(encoding="utf-8").strip().splitlines()[:3]:
+                parts = line.split(",")
+                if len(parts) >= 2 and parts[1].strip() == "1" and parts[0].strip():
+                    active.append(parts[0].strip())
+        if active:
+            self._scheduler_status.configure(
+                text=f"Active slots: {', '.join(active)}",
+                text_color="#2ECC71",
+            )
+        else:
+            self._scheduler_status.configure(
+                text="No active schedule.",
+                text_color="gray",
+            )
+
+    def _scheduler_thread(self) -> None:
+        triggered: set = set()
+        last_date = None
+
+        while True:
+            now = datetime.datetime.now()
+            today = now.date()
+            hhmm  = now.strftime("%H:%M")
+
+            if today != last_date:
+                triggered.clear()
+                last_date = today
+
+            if SCHEDULE_CONFIG.exists():
+                try:
+                    lines = SCHEDULE_CONFIG.read_text(encoding="utf-8").strip().splitlines()
+                    for i, line in enumerate(lines[:3]):
+                        parts = line.split(",")
+                        if len(parts) < 2:
+                            continue
+                        t_str   = parts[0].strip()
+                        enabled = parts[1].strip() == "1"
+                        key     = (today, i, t_str)
+                        if enabled and t_str == hhmm and key not in triggered:
+                            triggered.add(key)
+                            self.after(0, self._auto_start, i)
+                except Exception:
+                    pass
+
+            time.sleep(20)
+
+    def _auto_start(self, slot_idx: int = 0) -> None:
+        if not self._bot_running:
+            self.tabview.set("Bot")
+            self._log(f"[Scheduler] Auto-start triggered (slot {slot_idx + 1}).\n")
+            self._start()
 
 
 if __name__ == "__main__":
