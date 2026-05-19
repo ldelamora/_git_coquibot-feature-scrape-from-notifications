@@ -321,7 +321,7 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
                 pills.nth(j).scroll_into_view_if_needed(timeout=1000)
             except Exception:
                 pass
-            with page.expect_download(timeout=1500) as dl_info:
+            with page.expect_download(timeout=3000) as dl_info:
                 pills.nth(j).click()
             dl = dl_info.value
             base = dl.suggested_filename or 'attachment.pdf'
@@ -341,9 +341,13 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
             # likely loaded inline as a blob. Fall through to Strategy B.
             pass
 
-        # Strategy B: wait for the blob that the Strategy A click produced,
-        # then save it.  No second click — the pill was already clicked above.
-        page.wait_for_timeout(1500)
+        # Strategy B: poll up to 5 s for a network URL captured by on_response.
+        # Uses 200 ms ticks (same as _download_from_tab) so we exit as soon as
+        # the PDF arrives rather than always waiting the full duration.
+        for _ in range(25):
+            page.wait_for_timeout(200)
+            if any(u not in urls_before for u in captured_pdf_urls):
+                break
         new_urls = [u for u in captured_pdf_urls if u not in urls_before]
         new_blobs = [u for u in new_urls if u.startswith("blob:")]
         url = (new_blobs or new_urls or [None])[-1]
