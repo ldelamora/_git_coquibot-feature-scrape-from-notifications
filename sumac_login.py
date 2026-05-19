@@ -113,9 +113,9 @@ MESES = {
 
 
 def _wait_for_all_tiles(page, timeout=5000):
-    """Wait for both the top notification tiles and the bottom-left panel tiles."""
+    """Wait for both the top (home__topLeftPanel) and bottom (home__bottomLeftPanel) tiles."""
     try:
-        page.wait_for_selector(".courtNotificationsBox__tile", timeout=timeout)
+        page.wait_for_selector(".home__topLeftPanel .courtNotificationsBox__tile", timeout=timeout)
     except Exception:
         pass
     try:
@@ -526,15 +526,11 @@ def scrape_all_pdfs(page):
         bottom_case_numbers.append(num)
     print(f"Bottom panel: {bottom_count} cases: {bottom_case_numbers}")
 
-    # ── Top notification panel ────────────────────────────────────────────────
-    # The top panel uses .courtNotificationsBox__tile exclusively.
-    # The bottom panel's recourse tiles also use this class, so we subtract
-    # the bottom recourse count (tiles matching .courtNotificationsBox__tile
-    # inside .home__bottomLeftPanel) to get the true top-panel count.
-    bottom_recourse_count = page.locator(".home__bottomLeftPanel .courtNotificationsBox__tile").count()
-    all_tile_count = page.locator(".courtNotificationsBox__tile").count()
-    top_tile_count = all_tile_count - bottom_recourse_count
-    notif_tiles = page.locator(".courtNotificationsBox__tile")
+    # ── Top "Notificaciones del Tribunal" panel ───────────────────────────────
+    # Scoped directly to .home__topLeftPanel — no subtraction needed.
+    _TOP_TILE_SEL = ".home__topLeftPanel .courtNotificationsBox__tile"
+    notif_tiles = page.locator(_TOP_TILE_SEL)
+    top_tile_count = notif_tiles.count()
     case_numbers = []
     for i in range(top_tile_count):
         try:
@@ -603,7 +599,12 @@ def scrape_all_pdfs(page):
             print(f"  Skipping {case_number} (already processed this run).")
             continue
         try:
-            _process_case(page, i, case_number, landing_url, captured_pdf_urls, captured_pdf_data)
+            _process_case(
+                page, i, case_number, landing_url,
+                captured_pdf_urls, captured_pdf_data,
+                tile_selector=_TOP_TILE_SEL,
+                label="Notification",
+            )
             processed_cases.add(case_number)
         except Exception as e:
             print(f"Error on notification {case_number}: {e}")
