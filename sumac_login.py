@@ -412,9 +412,13 @@ def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, c
     label         — human-readable name for log messages ("Notification" or "Case").
     """
     # Re-query tiles using the correct selector for this panel.
+    # Wait for the specific tile at case_idx to be visible rather than doing an
+    # instant count check — the panel may still be rendering after navigation back.
     tiles = page.locator(tile_selector)
-    if case_idx >= tiles.count():
-        print(f"{label} tile {case_idx} no longer in DOM, skipping.")
+    try:
+        tiles.nth(case_idx).wait_for(state="visible", timeout=8000)
+    except Exception:
+        print(f"{label} tile {case_idx} not visible after wait, skipping.")
         return
 
     print(f"\n=== {label} {case_idx + 1}: {case_number} ===")
