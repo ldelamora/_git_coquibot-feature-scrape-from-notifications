@@ -504,18 +504,9 @@ def scrape_all_pdfs(page):
 
     # ── Snapshot both panels before any navigation ────────────────────────────
 
-    # Debug: probe possible selectors for the bottom panel so we know which one matches.
-    print("[debug] Probing bottom-left panel selectors:")
-    for _sel in [
-        ".home__bottomLeftPanel .courtNotificationsBox__tile",
-        ".home__bottomLeftPanel .caseTile__view",
-        ".home__bottomLeftPanel .notificationTile",
-        ".home__bottomLeftPanel [class*='tile']",
-        ".home__bottomLeftPanel [class*='Tile']",
-    ]:
-        print(f"  {_sel!r}: {page.locator(_sel).count()}")
-
-    # Bottom-left "Mis Casos" panel (also uses .courtNotificationsBox__tile, scoped to .home__bottomLeftPanel)
+    # ── Bottom-left "Mis Casos" panel ────────────────────────────────────────
+    # Uses the same .courtNotificationsBox__tile class as the top panel, so
+    # we always use the scoped selector to avoid mixing the two panels.
     bottom_tiles = page.locator(".home__bottomLeftPanel .courtNotificationsBox__tile")
     bottom_count = bottom_tiles.count()
     bottom_case_numbers = []
@@ -527,13 +518,17 @@ def scrape_all_pdfs(page):
         except Exception:
             num = f"miscase{i:03d}"
         bottom_case_numbers.append(num)
-    print(f"Found {bottom_count} 'Mis Casos' entries: {bottom_case_numbers}")
+    print(f"Bottom panel: {bottom_count} cases: {bottom_case_numbers}")
 
-    # Top notification panel (.courtNotificationsBox__tile tiles)
+    # ── Top notification panel ────────────────────────────────────────────────
+    # The unscoped selector picks up BOTH panels now that _wait_for_all_tiles
+    # has rendered both.  We subtract the bottom count so we only snapshot the
+    # top-panel tiles (top panel comes first in DOM order).
+    all_tile_count = page.locator(".courtNotificationsBox__tile").count()
+    top_tile_count = all_tile_count - bottom_count
     notif_tiles = page.locator(".courtNotificationsBox__tile")
-    notif_count = notif_tiles.count()
     case_numbers = []
-    for i in range(notif_count):
+    for i in range(top_tile_count):
         try:
             num = notif_tiles.nth(i).locator(
                 ".notificationTile__caseNumber, .notificationRecourseTile__recourseNumber"
@@ -541,7 +536,7 @@ def scrape_all_pdfs(page):
         except Exception:
             num = f"notif{i:03d}"
         case_numbers.append(num)
-    print(f"Found {notif_count} notifications: {case_numbers}")
+    print(f"Top panel: {top_tile_count} notifications: {case_numbers}")
 
     captured_pdf_urls = []
     captured_pdf_data = {}  # url → bytes captured at response time
