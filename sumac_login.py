@@ -494,29 +494,37 @@ def scrape_all_pdfs(page):
     # Capture the landing URL now so _process_case can return here after each tile.
     landing_url = page.url
 
-    print("Waiting for notifications to render...")
+    print("Waiting for page panels to render...")
     page.wait_for_timeout(5000)
     _wait_for_all_tiles(page)
 
-    if page.locator(".courtNotificationsBox__tile").count() == 0:
-        print("Notification tiles never appeared.")
-        return
+    # ── Snapshot both panels before any navigation ────────────────────────────
 
-    # Snapshot case numbers before entering the navigation loop.
-    # Notification tiles use two different BEM variants depending on the document type.
-    tiles = page.locator(".courtNotificationsBox__tile")
-    tile_count = tiles.count()
-    case_numbers = []
-    for i in range(tile_count):
+    # Bottom-left "Mis Casos" panel (.caseTile__view tiles)
+    bottom_tiles = page.locator(".home__bottomLeftPanel .caseTile__view")
+    bottom_count = bottom_tiles.count()
+    bottom_case_numbers = []
+    for i in range(bottom_count):
         try:
-            num = tiles.nth(i).locator(
+            num = bottom_tiles.nth(i).locator(".caseTile__caseNumber").first.inner_text(timeout=2000).strip()
+        except Exception:
+            num = f"miscase{i:03d}"
+        bottom_case_numbers.append(num)
+    print(f"Found {bottom_count} 'Mis Casos' entries: {bottom_case_numbers}")
+
+    # Top notification panel (.courtNotificationsBox__tile tiles)
+    notif_tiles = page.locator(".courtNotificationsBox__tile")
+    notif_count = notif_tiles.count()
+    case_numbers = []
+    for i in range(notif_count):
+        try:
+            num = notif_tiles.nth(i).locator(
                 ".notificationTile__caseNumber, .notificationRecourseTile__recourseNumber"
             ).first.inner_text(timeout=2000).strip()
         except Exception:
             num = f"notif{i:03d}"
         case_numbers.append(num)
-
-    print(f"Found {tile_count} notifications: {case_numbers}")
+    print(f"Found {notif_count} notifications: {case_numbers}")
 
     captured_pdf_urls = []
     captured_pdf_data = {}  # url → bytes captured at response time
@@ -545,38 +553,7 @@ def scrape_all_pdfs(page):
 
     processed_cases = set()
 
-    for i, case_number in enumerate(case_numbers):
-        if case_number in processed_cases:
-            print(f"  Skipping {case_number} (already processed this run).")
-            continue
-        try:
-            _process_case(page, i, case_number, landing_url, captured_pdf_urls, captured_pdf_data)
-            processed_cases.add(case_number)
-        except Exception as e:
-            print(f"Error on notification {case_number}: {e}")
-            page.goto(landing_url)
-            page.wait_for_timeout(5000)
-
-    # ── Bottom-left "Mis Casos" panel ─────────────────────────────────────────
-    # These tiles use .caseTile__view (not .courtNotificationsBox__tile).
-    # We re-snapshot here after returning from the last notification so we're
-    # guaranteed to be on the landing page with both panels rendered.
-    print("\nSnapshotting 'Mis Casos' (bottom-left panel)...")
-    page.wait_for_timeout(2000)
-    _wait_for_all_tiles(page)
-
-    bottom_tiles = page.locator(".home__bottomLeftPanel .caseTile__view")
-    bottom_count = bottom_tiles.count()
-    bottom_case_numbers = []
-    for i in range(bottom_count):
-        try:
-            num = bottom_tiles.nth(i).locator(".caseTile__caseNumber").first.inner_text(timeout=2000).strip()
-        except Exception:
-            num = f"miscase{i:03d}"
-        bottom_case_numbers.append(num)
-
-    print(f"Found {bottom_count} 'Mis Casos' entries: {bottom_case_numbers}")
-
+    # ── Process bottom-left "Mis Casos" panel first ───────────────────────────
     for i, case_number in enumerate(bottom_case_numbers):
         if case_number in processed_cases:
             print(f"  Skipping {case_number} (already processed).")
@@ -591,6 +568,19 @@ def scrape_all_pdfs(page):
             processed_cases.add(case_number)
         except Exception as e:
             print(f"Error on 'Mis Casos' {case_number}: {e}")
+            page.goto(landing_url)
+            page.wait_for_timeout(5000)
+
+    # ── Process top notification panel second ─────────────────────────────────
+    for i, case_number in enumerate(case_numbers):
+        if case_number in processed_cases:
+            print(f"  Skipping {case_number} (already processed this run).")
+            continue
+        try:
+            _process_case(page, i, case_number, landing_url, captured_pdf_urls, captured_pdf_data)
+            processed_cases.add(case_number)
+        except Exception as e:
+            print(f"Error on notification {case_number}: {e}")
             page.goto(landing_url)
             page.wait_for_timeout(5000)
 
