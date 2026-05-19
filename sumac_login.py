@@ -249,7 +249,8 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
     return False
 
 
-def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captured_pdf_data):
+def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captured_pdf_data,
+                                preloaded_urls=None, preloaded_data=None):
     """
     Download all PDFs attached as "Anejo" pills inside an expediente detail view.
 
@@ -259,6 +260,11 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
     Each child element of that container is a clickable pill.  Clicking a pill
     loads a PDF — either as a browser download or inline via PDF.js.  We handle
     both cases using the same network-interception strategy used elsewhere.
+
+    preloaded_urls / preloaded_data — URLs captured from the network before
+        captured_pdf_urls was cleared.  SUMAC pre-loads the first pill(s) when the
+        expediente opens; the browser then serves them from cache on re-click with
+        no new HTTP request.  Strategy C uses these as a fallback.
 
     Filenames follow the pattern: <filename_prefix>_anejo_<n>.pdf
     """
@@ -364,6 +370,20 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
                 print(f"    [Anejo] Saved: {save_path}")
                 continue
 
+        # Strategy C: URL was captured when the expediente first opened (SUMAC shows
+        # anejo_1 by default, so initial_urls[0] = anejo_1, [1] = anejo_2, etc.).
+        # The browser cached those responses; re-clicking fired no new network request,
+        # so Strategy B found nothing.  Use the saved URL directly.
+        if preloaded_urls and j < len(preloaded_urls):
+            url = preloaded_urls[j]
+            print(f"    [Anejo] Using pre-loaded URL for attachment {j + 1}")
+            label_part = f" - {pill_label}" if pill_label else ""
+            fname = f"{filename_prefix}_anejo_{j + 1}{label_part}.pdf"
+            save_path = os.path.join("sumac_documents", fname)
+            if _save_pdf_from_url(page, url, save_path, preloaded_data):
+                print(f"    [Anejo] Saved (pre-loaded): {save_path}")
+                continue
+
         print(f"    [Anejo] Could not save attachment {j + 1}.")
 
 
@@ -401,13 +421,21 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     date_prefix = f"{exp_date}_" if exp_date else ""
     filename_prefix = f"{date_prefix}[{exp_number}]_{case_number}"
 
+    # SUMAC pre-loads the first anejo pill(s) as the default view when an expediente
+    # opens — their PDF responses arrive before we even call _download_anejo_attachments.
+    # Save them now so Strategy C can use them as a fallback for pills that the browser
+    # serves from cache on re-click (no new network request, so Strategy B finds nothing).
+    initial_urls = list(captured_pdf_urls)
+    initial_data = dict(captured_pdf_data)
+
     # Fresh start for this expediente so stale URLs from previous ones don't leak in.
     captured_pdf_urls.clear()
     captured_pdf_data.clear()
 
     # Check for Anejo (attachment) pills BEFORE clicking any tab, because the
     # pillbox may only be visible in the default expediente view.
-    _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captured_pdf_data)
+    _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captured_pdf_data,
+                                initial_urls, initial_data)
 
     for tab_name in TABS_TO_CHECK:
         _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captured_pdf_data)
