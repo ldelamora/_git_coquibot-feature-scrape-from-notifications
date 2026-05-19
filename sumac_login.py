@@ -274,13 +274,12 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
         # No Anejo section present on this expediente — nothing to do.
         return
 
-    # Scroll the container to the bottom then back to top so that any
-    # lazy-rendered pills outside the viewport are forced into the DOM
-    # before we snapshot the count.
+    # The scrollable element is the inner scrollArea child, not the outer pillbox wrapper.
+    scroll_area = page.locator(".caseEntryDocumentContainer__attachmentsPillboxScrollArea")
     try:
-        container.first.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+        scroll_area.first.evaluate("el => { el.scrollTop = el.scrollHeight; }")
         page.wait_for_timeout(300)
-        container.first.evaluate("el => { el.scrollTop = 0; }")
+        scroll_area.first.evaluate("el => { el.scrollTop = 0; }")
         page.wait_for_timeout(200)
     except Exception:
         pass
@@ -293,6 +292,29 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
         return
 
     print(f"    [Anejo] Found {pill_count} attachment(s).")
+
+    # Strategy C pre-load map: pill DOM index → captured URL.
+    # SUMAC selects one pill by default (selectableTile__view-selected) whose PDF
+    # was fetched at expediente-open time.  That pill's DOM index is NOT necessarily
+    # the same as its position in initial_urls (it can be j=1 with initial_urls[0]).
+    # We detect the selected pill's index so the map is always correct.
+    preloaded_map = {}
+    if preloaded_urls:
+        selected_idxs = []
+        for k in range(pill_count):
+            try:
+                is_sel = pills.nth(k).evaluate(
+                    "el => { const p = el.closest('.selectableTile__view'); "
+                    "return p ? p.classList.contains('selectableTile__view-selected') : false; }"
+                )
+                if is_sel:
+                    selected_idxs.append(k)
+            except Exception:
+                pass
+        for k, u in zip(selected_idxs, preloaded_urls):
+            preloaded_map[k] = u
+        if preloaded_map:
+            print(f"    [Anejo] Pre-selected pill(s) at index(es) {list(preloaded_map.keys())} — pre-loaded URL(s) available")
 
     # Iterate last-to-first: clicking pill 1 first when the viewer already shows
     # the Notificación PDF causes it to display pill 1's cached blob without
@@ -370,12 +392,11 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
                 print(f"    [Anejo] Saved: {save_path}")
                 continue
 
-        # Strategy C: URL was captured when the expediente first opened (SUMAC shows
-        # anejo_1 by default, so initial_urls[0] = anejo_1, [1] = anejo_2, etc.).
-        # The browser cached those responses; re-clicking fired no new network request,
-        # so Strategy B found nothing.  Use the saved URL directly.
-        if preloaded_urls and j < len(preloaded_urls):
-            url = preloaded_urls[j]
+        # Strategy C: use pre-loaded URL for the pill SUMAC selected by default.
+        # preloaded_map keys are DOM indices of the selected pill(s), so the lookup
+        # is exact — no off-by-one from assuming initial_urls[j] == pill j.
+        if j in preloaded_map:
+            url = preloaded_map[j]
             print(f"    [Anejo] Using pre-loaded URL for attachment {j + 1}")
             label_part = f" - {pill_label}" if pill_label else ""
             fname = f"{filename_prefix}_anejo_{j + 1}{label_part}.pdf"
@@ -406,6 +427,12 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
         return
 
     print(f"  Expediente {exp_idx + 1}: #{exp_number}")
+
+    # Clear BEFORE clicking so initial_urls below will contain ONLY this expediente's
+    # pre-loaded responses — no stale URLs left over from the previous expediente.
+    captured_pdf_urls.clear()
+    captured_pdf_data.clear()
+
     tiles.nth(exp_idx).click()
     # Wait until the expediente detail renders (tab buttons or document container appear).
     # Falls back to a short fixed wait if those selectors never show up.
@@ -417,18 +444,23 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     except Exception:
         page.wait_for_timeout(1000)
 
+    # Extra wait: SUMAC loads the default-selected anejo PDF asynchronously AFTER the
+    # UI finishes rendering.  Without this pause, initial_urls is snapshotted before
+    # the pre-load response arrives and Strategy C has nothing to fall back on.
+    page.wait_for_timeout(800)
+
     # Build the filename prefix: date first so files sort chronologically.
     date_prefix = f"{exp_date}_" if exp_date else ""
     filename_prefix = f"{date_prefix}[{exp_number}]_{case_number}"
 
-    # SUMAC pre-loads the first anejo pill(s) as the default view when an expediente
-    # opens — their PDF responses arrive before we even call _download_anejo_attachments.
-    # Save them now so Strategy C can use them as a fallback for pills that the browser
-    # serves from cache on re-click (no new network request, so Strategy B finds nothing).
+    # Snapshot URLs pre-loaded by SUMAC when the expediente opened.  Strategy C in
+    # _download_anejo_attachments will map these to the correct pill by DOM index.
     initial_urls = list(captured_pdf_urls)
     initial_data = dict(captured_pdf_data)
+    if initial_urls:
+        print(f"  [Expediente] {len(initial_urls)} pre-loaded PDF(s) captured before clear")
 
-    # Fresh start for this expediente so stale URLs from previous ones don't leak in.
+    # Clear again so anejo/tab strategies start with a clean slate.
     captured_pdf_urls.clear()
     captured_pdf_data.clear()
 
