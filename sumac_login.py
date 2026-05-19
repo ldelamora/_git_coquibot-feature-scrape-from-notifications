@@ -330,7 +330,7 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
             with page.expect_download(timeout=3000) as dl_info:
                 pills.nth(j).click()
             dl = dl_info.value
-            base = dl.suggested_filename or 'attachment.pdf'
+            base = re.sub(r'[\\/:*?"<>|]+', '', dl.suggested_filename or '').strip() or 'attachment.pdf'
             label_part = f" - {pill_label}" if pill_label else ""
             fname = f"{filename_prefix}_anejo_{j + 1}{label_part}_{base}"
             save_path = os.path.join("sumac_documents", fname)
