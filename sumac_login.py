@@ -268,6 +268,17 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
         # No Anejo section present on this expediente — nothing to do.
         return
 
+    # Scroll the container to the bottom then back to top so that any
+    # lazy-rendered pills outside the viewport are forced into the DOM
+    # before we snapshot the count.
+    try:
+        container.first.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+        page.wait_for_timeout(300)
+        container.first.evaluate("el => { el.scrollTop = 0; }")
+        page.wait_for_timeout(200)
+    except Exception:
+        pass
+
     # Each attachment is rendered as a .caseEntryDocumentContainer__attachmentTile.
     pills = container.locator(".caseEntryDocumentContainer__attachmentTile")
     pill_count = pills.count()
@@ -304,6 +315,12 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
 
         try:
             # Strategy A: click triggers a browser download event.
+            # Scroll the pill into view first — nested scroll containers can
+            # confuse Playwright's auto-scroll when there are many pills.
+            try:
+                pills.nth(j).scroll_into_view_if_needed(timeout=1000)
+            except Exception:
+                pass
             with page.expect_download(timeout=1500) as dl_info:
                 pills.nth(j).click()
             dl = dl_info.value
