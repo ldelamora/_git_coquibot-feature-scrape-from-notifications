@@ -119,7 +119,7 @@ def _wait_for_all_tiles(page, timeout=5000):
     except Exception:
         pass
     try:
-        page.wait_for_selector(".home__bottomLeftPanel .courtNotificationsBox__tile", timeout=timeout)
+        page.wait_for_selector(".home__bottomLeftPanel .partiesNotificationsBox__tile", timeout=timeout)
     except Exception:
         pass  # Bottom panel may be empty — not an error
 
@@ -504,10 +504,16 @@ def scrape_all_pdfs(page):
 
     # ── Snapshot both panels before any navigation ────────────────────────────
 
-    # ── Bottom-left "Mis Casos" panel ────────────────────────────────────────
-    # Uses the same .courtNotificationsBox__tile class as the top panel, so
-    # we always use the scoped selector to avoid mixing the two panels.
-    bottom_tiles = page.locator(".home__bottomLeftPanel .courtNotificationsBox__tile")
+    # ── Bottom-left "Notificaciones Entre Partes" panel ──────────────────────
+    # This panel has two tile classes:
+    #   .partiesNotificationsBox__tile — the main between-parties notifications (~42)
+    #   .courtNotificationsBox__tile   — recourse notifications inside this panel (~7)
+    # We capture both with a combined selector.
+    _BOTTOM_TILE_SEL = (
+        ".home__bottomLeftPanel .partiesNotificationsBox__tile, "
+        ".home__bottomLeftPanel .courtNotificationsBox__tile"
+    )
+    bottom_tiles = page.locator(_BOTTOM_TILE_SEL)
     bottom_count = bottom_tiles.count()
     bottom_case_numbers = []
     for i in range(bottom_count):
@@ -521,12 +527,13 @@ def scrape_all_pdfs(page):
     print(f"Bottom panel: {bottom_count} cases: {bottom_case_numbers}")
 
     # ── Top notification panel ────────────────────────────────────────────────
-    # The unscoped selector picks up BOTH panels now that _wait_for_all_tiles
-    # has rendered both.  We subtract the bottom count so we only snapshot the
-    # top-panel tiles (top panel comes first in DOM order).
+    # The top panel uses .courtNotificationsBox__tile exclusively.
+    # The bottom panel's recourse tiles also use this class, so we subtract
+    # the bottom recourse count (tiles matching .courtNotificationsBox__tile
+    # inside .home__bottomLeftPanel) to get the true top-panel count.
+    bottom_recourse_count = page.locator(".home__bottomLeftPanel .courtNotificationsBox__tile").count()
     all_tile_count = page.locator(".courtNotificationsBox__tile").count()
-    top_tile_count = all_tile_count - bottom_count
-    print(f"[debug] all .courtNotificationsBox__tile={all_tile_count}  bottom={bottom_count}  top={top_tile_count}")
+    top_tile_count = all_tile_count - bottom_recourse_count
     notif_tiles = page.locator(".courtNotificationsBox__tile")
     case_numbers = []
     for i in range(top_tile_count):
@@ -578,7 +585,7 @@ def scrape_all_pdfs(page):
             _process_case(
                 page, i, case_number, landing_url,
                 captured_pdf_urls, captured_pdf_data,
-                tile_selector=".home__bottomLeftPanel .courtNotificationsBox__tile",
+                tile_selector=_BOTTOM_TILE_SEL,
                 label="Case",
             )
             processed_cases.add(case_number)
