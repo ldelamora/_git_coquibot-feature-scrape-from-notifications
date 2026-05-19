@@ -504,6 +504,17 @@ def scrape_all_pdfs(page):
 
     # ── Snapshot both panels before any navigation ────────────────────────────
 
+    # Debug: probe possible selectors for the bottom panel so we know which one matches.
+    print("[debug] Probing bottom-left panel selectors:")
+    for _sel in [
+        ".home__bottomLeftPanel .courtNotificationsBox__tile",
+        ".home__bottomLeftPanel .caseTile__view",
+        ".home__bottomLeftPanel .notificationTile",
+        ".home__bottomLeftPanel [class*='tile']",
+        ".home__bottomLeftPanel [class*='Tile']",
+    ]:
+        print(f"  {_sel!r}: {page.locator(_sel).count()}")
+
     # Bottom-left "Mis Casos" panel (also uses .courtNotificationsBox__tile, scoped to .home__bottomLeftPanel)
     bottom_tiles = page.locator(".home__bottomLeftPanel .courtNotificationsBox__tile")
     bottom_count = bottom_tiles.count()
