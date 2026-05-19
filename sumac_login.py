@@ -281,9 +281,9 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
             raw_label = pills.nth(j).inner_text(timeout=1000).strip()
         except Exception:
             raw_label = ""
-        # Sanitize for use in a filename: collapse whitespace, remove illegal chars.
+        # Sanitize for use in a filename: collapse whitespace, remove illegal chars, truncate.
         pill_label = re.sub(r'[\\/:*?"<>|]+', '', raw_label).strip()
-        pill_label = re.sub(r'\s+', ' ', pill_label)
+        pill_label = re.sub(r'\s+', ' ', pill_label)[:50]
 
         print(f"    [Anejo] Clicking attachment {j + 1}/{pill_count}: '{pill_label}'...")
 
