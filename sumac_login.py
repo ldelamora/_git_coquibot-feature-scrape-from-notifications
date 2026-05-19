@@ -569,28 +569,7 @@ def scrape_all_pdfs(page):
 
     processed_cases = set()
 
-    # ── Process bottom-left "Notificaciones Entre Partes" panel first ────────
-    print(f"\n{'='*60}")
-    print(f"STARTING BOTTOM PANEL  ({bottom_count} cases)")
-    print(f"{'='*60}")
-    for i, case_number in enumerate(bottom_case_numbers):
-        if case_number in processed_cases:
-            print(f"  Skipping {case_number} (already processed).")
-            continue
-        try:
-            _process_case(
-                page, i, case_number, landing_url,
-                captured_pdf_urls, captured_pdf_data,
-                tile_selector=_BOTTOM_TILE_SEL,
-                label="Case",
-            )
-            processed_cases.add(case_number)
-        except Exception as e:
-            print(f"Error on 'Mis Casos' {case_number}: {e}")
-            page.goto(landing_url)
-            page.wait_for_timeout(5000)
-
-    # ── Process top notification panel second ────────────────────────────────
+    # ── Process top "Notificaciones del Tribunal" panel first ────────────────
     print(f"\n{'='*60}")
     print(f"STARTING TOP PANEL  ({len(case_numbers)} notifications)")
     print(f"{'='*60}")
@@ -608,6 +587,27 @@ def scrape_all_pdfs(page):
             processed_cases.add(case_number)
         except Exception as e:
             print(f"Error on notification {case_number}: {e}")
+            page.goto(landing_url)
+            page.wait_for_timeout(5000)
+
+    # ── Process bottom-left "Notificaciones Entre Partes" panel second ────────
+    print(f"\n{'='*60}")
+    print(f"STARTING BOTTOM PANEL  ({bottom_count} cases)")
+    print(f"{'='*60}")
+    for i, case_number in enumerate(bottom_case_numbers):
+        if case_number in processed_cases:
+            print(f"  Skipping {case_number} (already processed).")
+            continue
+        try:
+            _process_case(
+                page, i, case_number, landing_url,
+                captured_pdf_urls, captured_pdf_data,
+                tile_selector=_BOTTOM_TILE_SEL,
+                label="Case",
+            )
+            processed_cases.add(case_number)
+        except Exception as e:
+            print(f"Error on 'Notificaciones Entre Partes' {case_number}: {e}")
             page.goto(landing_url)
             page.wait_for_timeout(5000)
 
