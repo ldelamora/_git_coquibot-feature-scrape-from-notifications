@@ -112,6 +112,18 @@ MESES = {
 }
 
 
+def _wait_for_all_tiles(page, timeout=5000):
+    """Wait for both the main and bottom-left panel notification tiles to load."""
+    try:
+        page.wait_for_selector(".courtNotificationsBox__tile", timeout=timeout)
+    except Exception:
+        pass
+    try:
+        page.wait_for_selector(".home__bottomLeftPanel .courtNotificationsBox__tile", timeout=timeout)
+    except Exception:
+        pass  # Bottom panel may be empty — not an error
+
+
 def _parse_date_es(text):
     """Parse a Spanish date string 'dd de mes de yyyy' → 'yyyy-mm-dd', or '' on failure."""
     m = re.search(r"(\d{1,2}) de (\w+) de (\d{4})", text, re.IGNORECASE)
@@ -414,7 +426,7 @@ def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, c
         print(f"  No expediente tiles found for {case_number}, skipping.")
         page.goto(landing_url)
         page.wait_for_timeout(3000)
-        page.wait_for_selector(".courtNotificationsBox__tile", timeout=3000)
+        _wait_for_all_tiles(page)
         return
 
     # Snapshot all expediente numbers NOW, before navigating into any of them.
@@ -458,7 +470,7 @@ def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, c
     # Hard-navigate back to Level 1 (notifications landing page).
     page.goto(landing_url)
     page.wait_for_timeout(3000)
-    page.wait_for_selector(".courtNotificationsBox__tile", timeout=5000)
+    _wait_for_all_tiles(page)
 
 
 def scrape_all_pdfs(page):
@@ -481,18 +493,11 @@ def scrape_all_pdfs(page):
 
     print("Waiting for notifications to render...")
     page.wait_for_timeout(5000)
+    _wait_for_all_tiles(page)
 
-    try:
-        page.wait_for_selector(".courtNotificationsBox__tile", timeout=5000)
-    except Exception as e:
-        print(f"Notification tiles never appeared: {e}")
+    if page.locator(".courtNotificationsBox__tile").count() == 0:
+        print("Notification tiles never appeared.")
         return
-
-    # Also wait for the bottom-left panel (second tile list) to load.
-    try:
-        page.wait_for_selector(".home__bottomLeftPanel .courtNotificationsBox__tile", timeout=5000)
-    except Exception:
-        pass  # Panel may be empty or not present — continue with whatever loaded
 
     # Snapshot case numbers before entering the navigation loop.
     # Notification tiles use two different BEM variants depending on the document type.
