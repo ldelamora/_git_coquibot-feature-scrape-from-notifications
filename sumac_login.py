@@ -113,13 +113,13 @@ MESES = {
 
 
 def _wait_for_all_tiles(page, timeout=5000):
-    """Wait for both the main and bottom-left panel notification tiles to load."""
+    """Wait for both the top notification tiles and the bottom-left 'Mis Casos' tiles."""
     try:
         page.wait_for_selector(".courtNotificationsBox__tile", timeout=timeout)
     except Exception:
         pass
     try:
-        page.wait_for_selector(".home__bottomLeftPanel .courtNotificationsBox__tile", timeout=timeout)
+        page.wait_for_selector(".home__bottomLeftPanel .caseTile__view", timeout=timeout)
     except Exception:
         pass  # Bottom panel may be empty — not an error
 
@@ -398,23 +398,26 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     page.wait_for_selector(".caseEntryTile__simpleView", timeout=5000)
 
 
-def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, captured_pdf_data):
+def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, captured_pdf_data,
+                  tile_selector=".courtNotificationsBox__tile", label="Notification"):
     """
     Level 2: click a case tile to open its detail view, iterate over every
     expediente inside it, then navigate back to the cases list (Level 1).
 
-    case_idx    — zero-based index into the current case tile list.
-    case_number — human-readable case number extracted before any navigation,
-                  so it remains valid even after the DOM is refreshed.
+    case_idx      — zero-based index into the current case tile list.
+    case_number   — human-readable case number extracted before any navigation,
+                    so it remains valid even after the DOM is refreshed.
+    tile_selector — CSS selector for the panel's tiles (differs between the top
+                    notification panel and the bottom-left "Mis Casos" panel).
+    label         — human-readable name for log messages ("Notification" or "Case").
     """
-    # Re-query notification tiles in case the DOM was rebuilt after the previous
-    # navigation cycle.
-    tiles = page.locator(".courtNotificationsBox__tile")
+    # Re-query tiles using the correct selector for this panel.
+    tiles = page.locator(tile_selector)
     if case_idx >= tiles.count():
-        print(f"Notification tile {case_idx} no longer in DOM, skipping.")
+        print(f"{label} tile {case_idx} no longer in DOM, skipping.")
         return
 
-    print(f"\n=== Notification {case_idx + 1}: {case_number} ===")
+    print(f"\n=== {label} {case_idx + 1}: {case_number} ===")
     tiles.nth(case_idx).click()
     page.wait_for_timeout(4000)  # Give the SPA time to load case detail content
 
@@ -554,8 +557,45 @@ def scrape_all_pdfs(page):
             page.goto(landing_url)
             page.wait_for_timeout(5000)
 
+    # ── Bottom-left "Mis Casos" panel ─────────────────────────────────────────
+    # These tiles use .caseTile__view (not .courtNotificationsBox__tile).
+    # We re-snapshot here after returning from the last notification so we're
+    # guaranteed to be on the landing page with both panels rendered.
+    print("\nSnapshotting 'Mis Casos' (bottom-left panel)...")
+    page.wait_for_timeout(2000)
+    _wait_for_all_tiles(page)
+
+    bottom_tiles = page.locator(".home__bottomLeftPanel .caseTile__view")
+    bottom_count = bottom_tiles.count()
+    bottom_case_numbers = []
+    for i in range(bottom_count):
+        try:
+            num = bottom_tiles.nth(i).locator(".caseTile__caseNumber").first.inner_text(timeout=2000).strip()
+        except Exception:
+            num = f"miscase{i:03d}"
+        bottom_case_numbers.append(num)
+
+    print(f"Found {bottom_count} 'Mis Casos' entries: {bottom_case_numbers}")
+
+    for i, case_number in enumerate(bottom_case_numbers):
+        if case_number in processed_cases:
+            print(f"  Skipping {case_number} (already processed).")
+            continue
+        try:
+            _process_case(
+                page, i, case_number, landing_url,
+                captured_pdf_urls, captured_pdf_data,
+                tile_selector=".home__bottomLeftPanel .caseTile__view",
+                label="Case",
+            )
+            processed_cases.add(case_number)
+        except Exception as e:
+            print(f"Error on 'Mis Casos' {case_number}: {e}")
+            page.goto(landing_url)
+            page.wait_for_timeout(5000)
+
     page.remove_listener("response", on_response)
-    print("\nAll notifications processed.")
+    print("\nAll panels processed.")
 
 
 # Holds the active browser instance so stop() can close it from outside.
