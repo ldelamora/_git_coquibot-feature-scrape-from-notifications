@@ -188,6 +188,8 @@ def _send_case_emails(new_files: list[str]) -> None:
                     msg.attach(MIMEText(body, "plain", "utf-8"))
                     server.sendmail(sender, [recipient], msg.as_string())
                     print(f"📧 Case email → {recipient}  (case {code}, {len(files)} file(s))")
+                    with open(_DROPBOX_LOG, "a", encoding="utf-8") as f:
+                        f.write(f"📧 Email sent to: {recipient} (case {code})\n")
     except Exception as e:
         print(f"❌ Failed to send case notification emails: {e}")
 
