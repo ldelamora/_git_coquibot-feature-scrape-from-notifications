@@ -53,11 +53,11 @@ _CASE_EMAIL_SUBJECT = "Timothée-Vega Law: Nuevos archivos disponibles en su Dro
 _CASE_EMAIL_BODY    = """\
 Estimado/a,
 
-Se le notifica que los siguientes archivos de su caso fueran enviados al dropbox:
+Se le notifica que los siguientes archivos de su caso fueron enviados a Dropbox:
 
 {file_list}
 
-Atenciosamente,
+Atentamente,
 
 Timothée-Vega Law, LLC
 https://www.timotheelaw.com
