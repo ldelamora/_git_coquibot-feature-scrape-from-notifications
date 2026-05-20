@@ -47,7 +47,7 @@ _SMTP_HOST       = "smtp.gmail.com"
 _SMTP_PORT       = 587
 _DROPBOX_DEFAULT = Path(r"C:\Users\luisd\Dropbox\Coquibot")
 _DROPBOX_LOG     = _SCRIPT_DIR / "dropboxLog.txt"
-_CASES_EMAILS    = _SCRIPT_DIR / "casesEmails.csv"
+_CASES_EMAILS = _SCRIPT_DIR / "casesEmails.csv"
 
 _CASE_EMAIL_SUBJECT = "Timothée-Vega Law: Nuevos archivos disponibles en su Dropbox"
 _CASE_EMAIL_BODY    = """\
@@ -133,17 +133,19 @@ def _send_email(new_files: list[str]) -> None:
         print(f"❌ Failed to send email notification: {e}")
 
 
-def _read_cases_emails() -> dict[str, str]:
-    """Return {case_code: email} from casesEmails.csv (column A / B, header on row 1)."""
+def _read_cases_emails() -> dict[str, list[str]]:
+    """Return {case_code: [email, ...]} from casesEmails.csv (col A / B, header on row 1).
+
+    The same case code may appear on multiple rows; each row adds another recipient.
+    """
     if not _CASES_EMAILS.exists():
         return {}
-    mapping: dict[str, str] = {}
-    # utf-8-sig handles BOM that Excel adds when saving as CSV
+    mapping: dict[str, list[str]] = {}
     with open(_CASES_EMAILS, encoding="utf-8-sig", newline="") as f:
         for row in csv.reader(f):
             if len(row) >= 2 and row[0].strip() and row[1].strip():
-                mapping[row[0].strip()] = row[1].strip()
-    # Remove the header row if it slipped through (column A won't match the regex)
+                mapping.setdefault(row[0].strip(), []).append(row[1].strip())
+    # Header row filtered out — its column A won't match the 13-char case code pattern
     return {k: v for k, v in mapping.items() if CASE_CODE_RE.fullmatch(k)}
 
 
@@ -176,16 +178,16 @@ def _send_case_emails(new_files: list[str]) -> None:
             server.starttls()
             server.login(sender, password)
             for code, files in to_notify.items():
-                recipient = cases_map[code]
                 file_list = "\n".join(f"  • {f}" for f in files)
                 body = _CASE_EMAIL_BODY.format(file_list=file_list)
-                msg = MIMEMultipart()
-                msg["From"]    = sender
-                msg["To"]      = recipient
-                msg["Subject"] = _CASE_EMAIL_SUBJECT
-                msg.attach(MIMEText(body, "plain", "utf-8"))
-                server.sendmail(sender, [recipient], msg.as_string())
-                print(f"📧 Case email → {recipient}  (case {code}, {len(files)} file(s))")
+                for recipient in cases_map[code]:
+                    msg = MIMEMultipart()
+                    msg["From"]    = sender
+                    msg["To"]      = recipient
+                    msg["Subject"] = _CASE_EMAIL_SUBJECT
+                    msg.attach(MIMEText(body, "plain", "utf-8"))
+                    server.sendmail(sender, [recipient], msg.as_string())
+                    print(f"📧 Case email → {recipient}  (case {code}, {len(files)} file(s))")
     except Exception as e:
         print(f"❌ Failed to send case notification emails: {e}")
 
