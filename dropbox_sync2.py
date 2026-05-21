@@ -55,8 +55,7 @@ _CASE_EMAIL_SUBJECT = "Timothée-Vega Law: Nuevos documentos relacionados con su
 _CASE_EMAIL_BODY    = """\
 Estimado/a {name} ,
 
-Se aneja copia de nuevos documentos relacionados con su caso, para su conocimiento y revisión:
-{file_list}
+Se aneja copia de nuevos documentos relacionados con su caso, para su conocimiento y revisión.
 
 De tener alguna duda o pregunta, no dude en comunicarse con nuestra oficina.
 
@@ -65,7 +64,7 @@ Cordialmente,
 Timothée Vega Law LLC
 https://www.timotheelaw.com
 PO Box 29149, San Juan PR 00929-0194
-Phone: (787) 764-5517 | E-mail: lcdo.fjtimothee@gmail.com
+Phone: (787) 764-5517 | E-mail: despachotimothee@gmail.com
 
 
 """
@@ -185,9 +184,8 @@ def _send_case_emails(new_files: list[str]) -> None:
             server.starttls()
             server.login(sender, password)
             for code, files in to_notify.items():
-                file_list = "\n".join(f"  • {f}" for f in files)
                 for recipient, name in cases_map[code]:
-                    body = _CASE_EMAIL_BODY.format(file_list=file_list, name=name)
+                    body = _CASE_EMAIL_BODY.format(name=name)
                     msg = MIMEMultipart()
                     msg["From"]    = sender
                     msg["To"]      = recipient
