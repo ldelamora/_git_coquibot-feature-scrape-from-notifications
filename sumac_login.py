@@ -9,9 +9,19 @@
 # Because SUMAC is a SPA, going "back" between levels uses page.go_back() or
 # page.goto() to force a full re-navigation rather than relying on DOM re-renders.
 
-from playwright.sync_api import sync_playwright
-from pathlib import Path
 import os
+from pathlib import Path
+
+# When frozen by PyInstaller, Playwright looks for Chromium inside the temp
+# bundle directory instead of the user's AppData folder.  Override with the
+# standard install location so the exe works on any machine after running
+# "playwright install chromium" once.
+if "PLAYWRIGHT_BROWSERS_PATH" not in os.environ:
+    _browsers = Path.home() / "AppData" / "Local" / "ms-playwright"
+    if _browsers.exists():
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_browsers)
+
+from playwright.sync_api import sync_playwright
 import re
 import urllib.request
 import time
