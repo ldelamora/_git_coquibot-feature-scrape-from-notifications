@@ -67,8 +67,12 @@ def _save_pdf_from_url(page, url, save_path, pdf_data_cache=None):
 
     # Primary: bytes already captured when the network response first arrived.
     if pdf_data_cache and url in pdf_data_cache:
+        data = pdf_data_cache[url]
+        if data[:4] != b"%PDF":
+            print(f"    cached response for {url} is not a PDF ({len(data)} bytes) — skipping")
+            return False
         with open(save_path, "wb") as f:
-            f.write(pdf_data_cache[url])
+            f.write(data)
         return True
 
     # Blob URLs live only in the browser — read them via page.evaluate().
@@ -578,19 +582,22 @@ def scrape_all_pdfs(page):
         Also captures the response body immediately so Strategy 3 never needs to
         make a second network request — critical for one-time-token PDF URLs.
         """
+        if response.status != 200:
+            return
         ct = response.headers.get("content-type", "")
         url = response.url.lower()
         if url.startswith("chrome-extension://"):
             return
         if "pdf" in ct.lower() or url.endswith(".pdf") or "pdf" in url:
-            print(f"  [network] PDF detected: {response.url}")
-            captured_pdf_urls.append(response.url)
             try:
                 data = response.body()
-                if data:
-                    captured_pdf_data[response.url] = data
             except Exception:
-                pass  # Body unavailable; urllib fallback will handle it
+                data = None
+            if not data or not data[:4] == b"%PDF":
+                return
+            print(f"  [network] PDF detected: {response.url}")
+            captured_pdf_urls.append(response.url)
+            captured_pdf_data[response.url] = data
 
     page.on("response", on_response)
 
