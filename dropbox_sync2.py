@@ -51,20 +51,23 @@ _DROPBOX_DEFAULT = Path(r"C:\Users\luisd\Dropbox\Coquibot")
 _DROPBOX_LOG     = _SCRIPT_DIR / "dropboxLog.txt"
 _CASES_EMAILS = _SCRIPT_DIR / "casesEmails.csv"
 
-_CASE_EMAIL_SUBJECT = "Timothée-Vega Law: Nuevos archivos disponibles en su Dropbox"
+_CASE_EMAIL_SUBJECT = "Timothée-Vega Law: Nuevos documentos relacionados con su caso"
 _CASE_EMAIL_BODY    = """\
-Estimado/a,
+Estimado/a {name} ,
 
-Se le notifica que los siguientes archivos de su caso fueron enviados a Dropbox:
-
+Se aneja copia de nuevos documentos relacionados con su caso, para su conocimiento y revisión:
 {file_list}
 
-Atentamente,
+De tener alguna duda o pregunta, no dude en comunicarse con nuestra oficina.
 
-Timothée-Vega Law, LLC
+Cordialmente,
+
+Timothée Vega Law LLC
 https://www.timotheelaw.com
-P.O. Box 29194 San Juan, Puerto Rico 00929-0194
-(787) 764-5517| mobile (787) 453-0543 | E-mail: lcdo.fjtimothee@gmail.com
+PO Box 29149, San Juan PR 00929-0194
+Phone: (787) 764-5517 | E-mail: lcdo.fjtimothee@gmail.com
+
+
 """
 
 
@@ -135,18 +138,20 @@ def _send_email(new_files: list[str]) -> None:
         print(f"❌ Failed to send email notification: {e}")
 
 
-def _read_cases_emails() -> dict[str, list[str]]:
-    """Return {case_code: [email, ...]} from casesEmails.csv (col A / B, header on row 1).
+def _read_cases_emails() -> dict[str, list[tuple[str, str]]]:
+    """Return {case_code: [(email, name), ...]} from casesEmails.csv.
 
+    Col A = case code, col B = email, col C = recipient name (optional).
     The same case code may appear on multiple rows; each row adds another recipient.
     """
     if not _CASES_EMAILS.exists():
         return {}
-    mapping: dict[str, list[str]] = {}
+    mapping: dict[str, list[tuple[str, str]]] = {}
     with open(_CASES_EMAILS, encoding="utf-8-sig", newline="") as f:
         for row in csv.reader(f):
             if len(row) >= 2 and row[0].strip() and row[1].strip():
-                mapping.setdefault(row[0].strip(), []).append(row[1].strip())
+                name = row[2].strip() if len(row) >= 3 else ""
+                mapping.setdefault(row[0].strip(), []).append((row[1].strip(), name))
     # Header row filtered out — its column A won't match the 13-char case code pattern
     return {k: v for k, v in mapping.items() if CASE_CODE_RE.fullmatch(k)}
 
@@ -181,8 +186,8 @@ def _send_case_emails(new_files: list[str]) -> None:
             server.login(sender, password)
             for code, files in to_notify.items():
                 file_list = "\n".join(f"  • {f}" for f in files)
-                body = _CASE_EMAIL_BODY.format(file_list=file_list)
-                for recipient in cases_map[code]:
+                for recipient, name in cases_map[code]:
+                    body = _CASE_EMAIL_BODY.format(file_list=file_list, name=name)
                     msg = MIMEMultipart()
                     msg["From"]    = sender
                     msg["To"]      = recipient
