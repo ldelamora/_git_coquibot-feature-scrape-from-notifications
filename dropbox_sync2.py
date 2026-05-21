@@ -28,6 +28,8 @@ import argparse
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 from pathlib import Path
 
 if getattr(sys, 'frozen', False):
@@ -186,6 +188,14 @@ def _send_case_emails(new_files: list[str]) -> None:
                     msg["To"]      = recipient
                     msg["Subject"] = _CASE_EMAIL_SUBJECT
                     msg.attach(MIMEText(body, "plain", "utf-8"))
+                    for fname in files:
+                        fpath = _SCRIPT_DIR / "sumac_documents" / fname
+                        if fpath.exists():
+                            part = MIMEBase("application", "octet-stream")
+                            part.set_payload(fpath.read_bytes())
+                            encoders.encode_base64(part)
+                            part.add_header("Content-Disposition", "attachment", filename=fname)
+                            msg.attach(part)
                     server.sendmail(sender, [recipient], msg.as_string())
                     print(f"📧 Case email → {recipient}  (case {code}, {len(files)} file(s))")
                     with open(_DROPBOX_LOG, "a", encoding="utf-8") as f:
