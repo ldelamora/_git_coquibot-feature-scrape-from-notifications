@@ -589,15 +589,14 @@ def scrape_all_pdfs(page):
         if url.startswith("chrome-extension://"):
             return
         if "pdf" in ct.lower() or url.endswith(".pdf") or "pdf" in url:
-            try:
-                data = response.body()
-            except Exception:
-                data = None
-            if not data or not data[:4] == b"%PDF":
-                return
             print(f"  [network] PDF detected: {response.url}")
             captured_pdf_urls.append(response.url)
-            captured_pdf_data[response.url] = data
+            try:
+                data = response.body()
+                if data and data[:4] == b"%PDF":
+                    captured_pdf_data[response.url] = data
+            except Exception:
+                pass  # URL still recorded; urllib/blob fallback will handle body
 
     page.on("response", on_response)
 
