@@ -675,48 +675,43 @@ def run():
     """
     global _active_browser
     username, password = read_credentials()
+    current_url = ""
 
-    with sync_playwright() as p:
-        # headless=False keeps the browser window open so behaviour is visible
-        # and easier to debug when something goes wrong.
-        browser = p.chromium.launch(headless=False)
-        _active_browser = browser
-        page = browser.new_page()
-        page.goto(SUMAC_URL)
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=False)
+            _active_browser = browser
+            page = browser.new_page()
+            page.goto(SUMAC_URL)
 
-        # Fill the login form using a multi-selector string so the locator works
-        # regardless of which attribute SUMAC uses to identify its inputs.
-        page.fill("input[name='username'], input[type='text'], #username", username)
-        page.fill("input[name='password'], input[type='password'], #password", password)
+            page.fill("input[name='username'], input[type='text'], #username", username)
+            page.fill("input[name='password'], input[type='password'], #password", password)
 
-        print("Clicking 'Acceder'...")
-        login_button = page.get_by_role("button", name="Acceder", exact=True)
-        login_button.wait_for(state="visible", timeout=5000)
-        login_button.click()
+            print("Clicking 'Acceder'...")
+            login_button = page.get_by_role("button", name="Acceder", exact=True)
+            login_button.wait_for(state="visible", timeout=5000)
+            login_button.click()
 
-        print("Login clicked. Checking for successful entry...")
-        time.sleep(20)
+            print("Login clicked. Checking for successful entry...")
+            time.sleep(20)
 
-        # networkidle means no in-flight XHR requests for ≥500 ms — a good
-        # signal that the post-login redirect has fully settled.
-        page.wait_for_load_state("networkidle")
-        
-        # Stay on the import time
-        # post-login landing page (notifications) — scraping starts here.
-        current_url = page.url
-        print(f"Landing URL after login: {current_url}")
+            page.wait_for_load_state("networkidle")
 
-        try:
-            scrape_all_pdfs(page)
-        except Exception as e:
-            # TargetClosedError is raised when stop() closes the browser mid-run.
-            # Any files already downloaded are still synced to Dropbox below.
-            print(f"\n[Scraping ended early: {e.__class__.__name__}]")
+            current_url = page.url
+            print(f"Landing URL after login: {current_url}")
 
-    _active_browser = None
+            try:
+                scrape_all_pdfs(page)
+            except Exception as e:
+                # TargetClosedError is raised when stop() closes the browser mid-run.
+                print(f"\n[Scraping ended early: {e.__class__.__name__}]")
+    except Exception as e:
+        # Catch errors during playwright context cleanup (e.g. greenlet/thread errors
+        # when stop() closes the browser from the GUI thread).
+        print(f"\n[Browser session ended: {e.__class__.__name__}]")
+    finally:
+        _active_browser = None
 
-    # A simple heuristic: if we're still on the sign-in page the credentials
-    # were likely rejected.
     if "signIn" in current_url:
         return "Login may have failed — still on sign-in page."
 
