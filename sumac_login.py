@@ -282,13 +282,14 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
         # No Anejo section present on this expediente — nothing to do.
         return
 
-    # Scroll the container to the bottom then back to top so that any
-    # lazy-rendered pills outside the viewport are forced into the DOM
-    # before we snapshot the count.
+    # Scroll the inner scrollable area fully right then back to the start
+    # so any lazy-rendered pills outside the viewport are forced into the DOM.
+    # The pills sit in attachmentsPillboxScrollArea (horizontal scroll).
+    scroll_area = container.locator(".caseEntryDocumentContainer__attachmentsPillboxScrollArea")
     try:
-        container.first.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+        scroll_area.first.evaluate("el => { el.scrollLeft = el.scrollWidth; }")
         page.wait_for_timeout(300)
-        container.first.evaluate("el => { el.scrollTop = 0; }")
+        scroll_area.first.evaluate("el => { el.scrollLeft = 0; }")
         page.wait_for_timeout(200)
     except Exception:
         pass
@@ -332,7 +333,7 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
             # Scroll the pill into view first — nested scroll containers can
             # confuse Playwright's auto-scroll when there are many pills.
             try:
-                pills.nth(j).scroll_into_view_if_needed(timeout=1000)
+                pills.nth(j).evaluate("el => el.scrollIntoView({block: 'nearest', inline: 'nearest'})")
             except Exception:
                 pass
             with page.expect_download(timeout=1500) as dl_info:
@@ -361,6 +362,14 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
         new_urls = [u for u in captured_pdf_urls if u not in urls_before]
         new_blobs = [u for u in new_urls if u.startswith("blob:")]
         url = (new_blobs or new_urls or [None])[-1]
+
+        # Strategy C: single pre-selected pill — SUMAC doesn't reload it because
+        # no other pill was shown first.  Its PDF fired during the tile click and
+        # is sitting in urls_before (the page-load snapshot).
+        if not url and pill_count == 1:
+            url = urls_before[-1] if urls_before else None
+            if url:
+                print(f"    [Anejo] Single pre-selected pill — using page-load URL.")
 
         if url:
             label_part = f" - {pill_label}" if pill_label else ""
@@ -411,13 +420,16 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     date_prefix = f"{exp_date}_" if exp_date else ""
     filename_prefix = f"{date_prefix}[{exp_number}]_{case_number}"
 
-    # Fresh start for this expediente so stale URLs from previous ones don't leak in.
-    captured_pdf_urls.clear()
-    captured_pdf_data.clear()
-
     # Check for Anejo (attachment) pills BEFORE clicking any tab, because the
     # pillbox may only be visible in the default expediente view.
+    # NOTE: do NOT clear captured_pdf_urls before this call — the pre-selected
+    # pill's PDF is captured during the tile click above, and the anejo function
+    # needs those page-load URLs as a fallback for single-pill cases.
     _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captured_pdf_data)
+
+    # Clear after anejo processing so stale URLs don't leak into tab downloads.
+    captured_pdf_urls.clear()
+    captured_pdf_data.clear()
 
     for tab_name in TABS_TO_CHECK:
         _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captured_pdf_data)
