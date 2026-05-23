@@ -33,7 +33,7 @@ SUMAC_URL = "https://tribunalelectronico.ramajudicial.pr/sumac2018/signIn.html"
 CREDENTIALS_FILE = "sumac.txt"
 
 # Tab names inside each expediente that may contain downloadable PDFs.
-TABS_TO_CHECK = ["Documento", "Notificación"]
+TABS_TO_CHECK = ["Notificación", "Documento"]
 
 
 def read_credentials():
