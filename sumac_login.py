@@ -203,6 +203,11 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
 
     title_part = f" - {doc_title}" if doc_title else ""
 
+    # If the download button is disabled the tab contains only inline text — no PDF exists.
+    if page.locator(".caseEntryDocumentContainer__downloadButton[disabled]").count() > 0:
+        print(f"    [{tab_name}] Download button disabled — text-only content, skipping.")
+        return False
+
     # Fast path: if the PDF was already captured by the network listener during
     # the 2s wait, skip Strategy 1 & 2 entirely and go straight to Strategy 3.
     # This avoids burning 1s timeouts when the PDF renders inline (the common case).
