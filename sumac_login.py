@@ -334,10 +334,14 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
             # confuse Playwright's auto-scroll when there are many pills.
             try:
                 pills.nth(j).evaluate("el => el.scrollIntoView({block: 'nearest', inline: 'nearest'})")
+                page.wait_for_timeout(150)
             except Exception:
                 pass
             with page.expect_download(timeout=1500) as dl_info:
-                pills.nth(j).click()
+                # force=True tells Playwright to trust our manual scroll above
+                # instead of re-scrolling with its own algorithm, which does not
+                # handle nested horizontal scroll containers correctly.
+                pills.nth(j).click(force=True)
             dl = dl_info.value
             base = dl.suggested_filename or 'attachment.pdf'
             label_part = f" - {pill_label}" if pill_label else ""
