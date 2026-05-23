@@ -248,6 +248,12 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
                         pass
 
     # Strategy 3: PDF URL intercepted from network traffic.
+    # Skipped for Documento — Strategy 1/2 are sufficient and Strategy 3
+    # causes unnecessary delays on that tab.
+    if tab_name == "Documento":
+        print(f"    [{tab_name}] No PDF found.")
+        return False
+
     # Prefer URLs captured AFTER the tab click (fresh request). If none, fall
     # back to pre-existing URLs — this covers the case where SUMAC serves the
     # PDF from cache on re-click (e.g. Documento after Anejo interactions).
