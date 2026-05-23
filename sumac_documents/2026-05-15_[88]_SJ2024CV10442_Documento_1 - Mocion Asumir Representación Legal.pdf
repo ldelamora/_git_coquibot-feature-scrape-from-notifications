@@ -6,7 +6,7 @@
   <body>
     <template shadowrootmode="closed">
       <link rel="stylesheet" href="chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_embedder.css">
-      <iframe name="B717AFF27E7EA182AA3AF313F6C197C3" src="about:blank" type="application/pdf" internalid="B717AFF27E7EA182AA3AF313F6C197C3"
+      <iframe name="5A21DF8D02CD2A2EC77DBB000DBA05A3" src="about:blank" type="application/pdf" internalid="5A21DF8D02CD2A2EC77DBB000DBA05A3"
           allow="fullscreen *"></iframe>
       <slot></slot>
     </template>

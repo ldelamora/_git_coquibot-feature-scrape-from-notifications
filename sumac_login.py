@@ -181,12 +181,23 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
     # URL is the only way to save it.
     urls_before_click = list(captured_pdf_urls)
     tab.first.click()
-    # Poll every 200ms instead of a fixed 2s wait — exits as soon as a PDF URL
-    # is captured, which is usually within one or two ticks for cached PDFs.
-    for _ in range(10):
+    # Two-phase poll:
+    #   Phase 1 (0–2 s): wait for a new URL to appear in captured_pdf_urls.
+    #     If none arrives, the PDF was likely served from cache and its URL was
+    #     already in captured_pdf_urls before the click — fall through to Strategy 3.
+    #   Phase 2 (2–12 s): URL detected but response.body() (running in a background
+    #     thread) hasn't finished caching the bytes yet.  Keep waiting so that
+    #     Strategy 3 can save via the in-memory cache rather than urllib (which
+    #     often fails on one-time-token URLs).
+    for i in range(75):  # 75 × 200 ms = 15 s ceiling
         page.wait_for_timeout(200)
-        if any(u not in urls_before_click for u in captured_pdf_urls):
-            break
+        new = [u for u in captured_pdf_urls if u not in urls_before_click]
+        if new and any(u in captured_pdf_data for u in new):
+            break  # URL + bytes cached — ready to save
+        if not new and i >= 9:
+            break  # no new URL after 2 s — fall through to Strategy 1/2/3
+        if new and i >= 60:
+            break  # URL found but body never cached after 12 s — try anyway
 
     # Read the document title shown in the tab header (h1 inside the document
     # header container).  Prefer the title attribute; fall back to inner text.
@@ -434,11 +445,24 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     # needs those page-load URLs as a fallback for single-pill cases.
     _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captured_pdf_data)
 
-    # Clear after anejo processing so stale URLs don't leak into tab downloads.
+    # After anejos, snapshot any remaining page-load URLs as a fallback for
+    # Documento. SUMAC auto-loads Documento when the expediente opens, but after
+    # clicking Notificación first, it may serve Documento from cache with no new
+    # network request — this snapshot is the only way to save it in that case.
+    doc_fallback_urls = list(captured_pdf_urls)
+    doc_fallback_data = dict(captured_pdf_data)
+
+    # Clear so stale URLs don't leak into tab downloads.
     captured_pdf_urls.clear()
     captured_pdf_data.clear()
 
     for tab_name in TABS_TO_CHECK:
+        if tab_name == "Documento":
+            for u in doc_fallback_urls:
+                if u not in captured_pdf_urls:
+                    captured_pdf_urls.append(u)
+                    if u in doc_fallback_data:
+                        captured_pdf_data[u] = doc_fallback_data[u]
         _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captured_pdf_data)
 
     # Return to case detail (Level 2) using browser history.
