@@ -310,7 +310,15 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
     # content, forcing a real reload and a fresh blob URL we can capture.
     for j in range(pill_count - 1, -1, -1):
         # Skip if this attachment index was already saved in a prior run.
-        if _already_downloaded(f"{filename_prefix}_anejo_{j + 1}"):
+        # Use a boundary check: the character after the number must be non-digit
+        # so that e.g. anejo_1 does not falsely match anejo_10, anejo_11, etc.
+        _anejo_prefix = f"{filename_prefix}_anejo_{j + 1}"
+        _dest = Path("sumac_documents")
+        if _dest.exists() and any(
+            f.name.startswith(_anejo_prefix)
+            and not f.name[len(_anejo_prefix):len(_anejo_prefix) + 1].isdigit()
+            for f in _dest.iterdir() if f.is_file()
+        ):
             print(f"    [Anejo] Attachment {j + 1} already downloaded, skipping.")
             continue
 
@@ -362,7 +370,7 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
 
         # Strategy B: wait for the blob that the Strategy A click produced,
         # then save it.  No second click — the pill was already clicked above.
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(8000)
         new_urls = [u for u in captured_pdf_urls if u not in urls_before]
         new_blobs = [u for u in new_urls if u.startswith("blob:")]
         url = (new_blobs or new_urls or [None])[-1]
