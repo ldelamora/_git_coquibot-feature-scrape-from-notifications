@@ -342,10 +342,43 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
         pill_label = re.sub(r'[\\/:*?"<>|]+', '', raw_label).strip()
         pill_label = re.sub(r'\s+', ' ', pill_label)[:50]
 
-        print(f"    [Anejo] Clicking attachment {j + 1}/{pill_count}: '{pill_label}'...")
-
         # Snapshot BEFORE clicking so we can detect what the single click produces.
         urls_before = list(captured_pdf_urls)
+
+        # Detect whether this pill is already selected (pre-loaded on page open).
+        # Clicking a selected tile may DE-select it, causing SUMAC to reload the
+        # main Documento — whose new blob we would mistake for the anejo blob.
+        # Instead, skip the click and use the last URL from the page-load snapshot,
+        # which is the pre-selected anejo's blob (fires after the Documento blob).
+        try:
+            was_preselected = pills.nth(j).evaluate(
+                "el => el.closest('.selectableTile__view')"
+                ".classList.contains('selectableTile__view-selected')"
+            )
+        except Exception:
+            was_preselected = False
+
+        if was_preselected:
+            # The anejo blob was captured on page load — it is the last blob URL
+            # in urls_before (Documento fires first; anejo fires second).
+            preload_url = next(
+                (u for u in reversed(urls_before) if u.startswith("blob:")),
+                urls_before[-1] if urls_before else None,
+            )
+            if preload_url:
+                label_part = f" - {pill_label}" if pill_label else ""
+                fname = f"{filename_prefix}_anejo_{j + 1}{label_part}.pdf"
+                save_path = os.path.join("sumac_documents", fname)
+                print(f"    [Anejo] Pre-selected pill — using page-load URL for attachment {j + 1}.")
+                if _save_pdf_from_url(page, preload_url, save_path, captured_pdf_data):
+                    captured_pdf_urls[:] = [u for u in captured_pdf_urls if u != preload_url]
+                    captured_pdf_data.pop(preload_url, None)
+                    print(f"    [Anejo] Saved: {save_path}")
+                    continue
+            print(f"    [Anejo] Could not save pre-selected attachment {j + 1}.")
+            continue
+
+        print(f"    [Anejo] Clicking attachment {j + 1}/{pill_count}: '{pill_label}'...")
 
         try:
             # Strategy A: click triggers a browser download event.
@@ -381,9 +414,8 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
         new_blobs = [u for u in new_urls if u.startswith("blob:")]
         url = (new_blobs or new_urls or [None])[-1]
 
-        # Strategy C: single pre-selected pill — SUMAC doesn't reload it because
-        # no other pill was shown first.  Its PDF fired during the tile click and
-        # is sitting in urls_before (the page-load snapshot).
+        # Strategy C: single pill, was pre-selected on page load — its blob is
+        # in urls_before (handled above for multi-pill cases via was_preselected).
         if not url and pill_count == 1:
             url = urls_before[-1] if urls_before else None
             if url:
@@ -538,7 +570,7 @@ def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, c
 
     print(f"  Found {exp_count} expedientes: {exp_numbers}")
 
-    for i, exp_number in enumerate(exp_numbers[:3]):
+    for i, exp_number in enumerate(exp_numbers[:10]):
         try:
             _process_expediente(page, i, case_number, exp_number, exp_dates[i], captured_pdf_urls, captured_pdf_data)
         except Exception as e:

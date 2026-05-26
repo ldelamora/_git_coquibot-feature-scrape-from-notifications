@@ -51,6 +51,8 @@ _DROPBOX_DEFAULT = Path(r"C:\Users\luisd\Dropbox\Coquibot")
 _DROPBOX_LOG     = _SCRIPT_DIR / "dropboxLog.txt"
 _CASES_EMAILS = _SCRIPT_DIR / "casesEmails.csv"
 
+_BATCH_SIZE = 10  # max attachments per case notification email
+
 _CASE_EMAIL_SUBJECT = "Timothée-Vega Law: Nuevos documentos relacionados con su caso"
 _CASE_EMAIL_BODY    = """\
 Estimado/a {name} ,
@@ -184,25 +186,33 @@ def _send_case_emails(new_files: list[str]) -> None:
             server.starttls()
             server.login(sender, password)
             for code, files in to_notify.items():
+                batches = [files[i:i + _BATCH_SIZE] for i in range(0, len(files), _BATCH_SIZE)]
+                total_batches = len(batches)
                 for recipient, name in cases_map[code]:
-                    body = _CASE_EMAIL_BODY.format(name=name)
-                    msg = MIMEMultipart()
-                    msg["From"]    = sender
-                    msg["To"]      = recipient
-                    msg["Subject"] = _CASE_EMAIL_SUBJECT
-                    msg.attach(MIMEText(body, "plain", "utf-8"))
-                    for fname in files:
-                        fpath = _SCRIPT_DIR / "sumac_documents" / fname
-                        if fpath.exists():
-                            part = MIMEBase("application", "octet-stream")
-                            part.set_payload(fpath.read_bytes())
-                            encoders.encode_base64(part)
-                            part.add_header("Content-Disposition", "attachment", filename=fname)
-                            msg.attach(part)
-                    server.sendmail(sender, [recipient], msg.as_string())
-                    print(f"📧 Case email → {recipient}  (case {code}, {len(files)} file(s))")
-                    with open(_DROPBOX_LOG, "a", encoding="utf-8") as f:
-                        f.write(f"📧 Email sent to: {recipient} (case {code})\n")
+                    for batch_idx, batch in enumerate(batches, start=1):
+                        if total_batches > 1:
+                            subject = f"{batch_idx} de {total_batches}: {_CASE_EMAIL_SUBJECT}"
+                        else:
+                            subject = _CASE_EMAIL_SUBJECT
+                        body = _CASE_EMAIL_BODY.format(name=name)
+                        msg = MIMEMultipart()
+                        msg["From"]    = sender
+                        msg["To"]      = recipient
+                        msg["Subject"] = subject
+                        msg.attach(MIMEText(body, "plain", "utf-8"))
+                        for fname in batch:
+                            fpath = _SCRIPT_DIR / "sumac_documents" / fname
+                            if fpath.exists():
+                                part = MIMEBase("application", "octet-stream")
+                                part.set_payload(fpath.read_bytes())
+                                encoders.encode_base64(part)
+                                part.add_header("Content-Disposition", "attachment", filename=fname)
+                                msg.attach(part)
+                        server.sendmail(sender, [recipient], msg.as_string())
+                        batch_label = f" ({batch_idx}/{total_batches})" if total_batches > 1 else ""
+                        print(f"📧 Case email{batch_label} → {recipient}  (case {code}, {len(batch)} file(s))")
+                        with open(_DROPBOX_LOG, "a", encoding="utf-8") as f:
+                            f.write(f"📧 Email sent to: {recipient} (case {code}){batch_label}\n")
     except Exception as e:
         print(f"❌ Failed to send case notification emails: {e}")
 
