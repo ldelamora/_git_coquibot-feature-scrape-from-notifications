@@ -1,13 +1,36 @@
 # sumac_login.py — Playwright automation for logging into SUMAC and scraping PDFs.
 #
-# Navigation follows a 3-level hierarchy mirrored by SUMAC's SPA (Single-Page App):
-#   Level 1  →  "My Cases" list  (.caseTile__view tiles)
-#   Level 2  →  Case detail view  (.caseEntryTile__simpleView expediente tiles)
-#   Level 3  →  Expediente detail  (Documento / Notificación tabs with downloadable PDFs,
-#               plus optional "Anejo" attachment pills in div.attachmentsPillbox)
+# ── Navigation hierarchy ──────────────────────────────────────────────────────
+#   Level 1  →  Notifications landing page  (two panels of case tiles)
+#   Level 2  →  Case detail view            (.caseEntryTile__simpleView expediente list)
+#   Level 3  →  Expediente detail           (Documento / Notificación tabs + optional Anejo pills)
 #
-# Because SUMAC is a SPA, going "back" between levels uses page.go_back() or
-# page.goto() to force a full re-navigation rather than relying on DOM re-renders.
+# Because SUMAC is a Single-Page App (SPA), navigating "back" between levels
+# uses page.go_back() or a hard page.goto() — the DOM does not re-render
+# predictably after a Playwright .click() alone.
+#
+# ── Expediente detail layout (Level 3) ───────────────────────────────────────
+# When the expediente opens, SUMAC auto-selects the first Anejo pill and renders
+# a two-column layout:
+#
+#   ┌─────────────────────────────┬──────────────────────────────┐
+#   │  LEFT pillbox               │  RIGHT pillbox               │
+#   │  .leftPillbox               │  .rightPillbox               │
+#   │  Always shows the Documento │  Shows the currently-selected│
+#   │  PDF (the main filing)      │  Anejo (attachment) PDF      │
+#   │  [Download button]          │  [Download button]           │
+#   └─────────────────────────────┴──────────────────────────────┘
+#
+# The two download buttons are visually identical (.caseEntryDocumentContainer__downloadButton)
+# but scoped to their respective pillbox — so we always target the correct one
+# by qualifying with `.leftPillbox` or `.rightPillbox`.
+#
+# ── PDF capture strategies ────────────────────────────────────────────────────
+# Anejos:   (1) right-pillbox download button  (2) right-pillbox iframe src
+# Documento:(0) left-pillbox download button while anejos are active
+#           (1) dedicated .caseEntriesView__downloadButton after tab click
+#           (2) generic anchor/download links
+#           (3) URL captured passively from network responses (on_response)
 
 import os
 from pathlib import Path
@@ -32,8 +55,10 @@ SUMAC_URL = "https://tribunalelectronico.ramajudicial.pr/sumac2018/signIn.html"
 # Plain-text credentials file (gitignored). Line 1 = username, line 2 = password.
 CREDENTIALS_FILE = "sumac.txt"
 
-# Tab names inside each expediente that may contain downloadable PDFs.
-TABS_TO_CHECK = ["Notificación", "Documento"]
+# Processing order per expediente (see _process_expediente):
+#   1. Documento   — left-pillbox button (no tab click; keeps anejo pillbox intact)
+#   2. Anejos      — iterate pills while pillbox is still visible
+#   3. Notificación — tab click (view changes, pillbox hidden; anejos already done)
 
 
 def read_credentials():
@@ -150,14 +175,20 @@ def _parse_date_es(text):
 
 def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captured_pdf_data):
     """
-    Click a tab inside an expediente detail view and attempt to save any PDF
-    it contains.  Three strategies are tried in order of preference:
-      1. Dedicated download button rendered by SUMAC (.caseEntriesView__downloadButton)
-      2. Any generic anchor or element that triggers a Playwright download event
-      3. PDF URLs captured passively from network responses (see on_response in
-         scrape_all_pdfs) — used when the PDF is rendered inline via PDF.js and
-         never triggers a normal browser download.
-    Returns True as soon as one PDF is saved, False if nothing was found.
+    Download the PDF for a given tab (Notificación or Documento) inside an
+    expediente detail view.  Returns True as soon as one PDF is saved, False
+    if nothing was found.
+
+    For Documento, four strategies are tried in order:
+      0. Left-pillbox download button — only present when anejos are active;
+         unambiguously downloads the Documento without clicking the tab at all.
+      1. Dedicated download button (.caseEntriesView__downloadButton) after
+         clicking the tab.
+      2. Any generic anchor / download link on the page.
+      3. PDF URL intercepted passively from network traffic (on_response in
+         scrape_all_pdfs) — fallback for PDFs rendered inline via PDF.js.
+
+    For Notificación, only strategies 1–3 apply (no left-pillbox button).
     """
     # Locate the tab button — SUMAC sometimes uses a title attribute, sometimes
     # just inner text, so we fall back to text-based filtering.
@@ -168,27 +199,103 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
         print(f"    Tab '{tab_name}' not found.")
         return False
 
-    # Skip the network round-trip if this tab's PDF was already saved in a prior run.
-    # The prefix {filename_prefix}_{tab_name}_ is unique enough (encodes date,
-    # expediente number, case code, and tab name) to avoid false positives.
-    if _already_downloaded(f"{filename_prefix}_{tab_name}_"):
+    # Omit the tab name from Documento filenames — the doc title already identifies it.
+    tab_label = "" if tab_name == "Documento" else tab_name
+
+    # Skip if already saved in a prior run.
+    # Notificación filenames start with "{prefix}_Notificación", so a simple
+    # prefix check works.  Documento filenames have no extra segment after the
+    # prefix — they look like "{prefix} - Title.pdf" — so we check for a space
+    # or dot immediately after the prefix to avoid false matches with anejos
+    # (which would also start with the same prefix).
+    if tab_label:
+        already_dl = _already_downloaded(f"{filename_prefix}_{tab_label}")
+    else:
+        _dest_dl = Path("sumac_documents")
+        already_dl = _dest_dl.exists() and any(
+            f.name.startswith(filename_prefix)
+            and len(f.name) > len(filename_prefix)
+            and f.name[len(filename_prefix)] in ('.', ' ')
+            for f in _dest_dl.iterdir() if f.is_file()
+        )
+    if already_dl:
         print(f"    [{tab_name}] Already downloaded, skipping.")
         return True
 
-    # Snapshot before clicking so Strategy 3 can tell new from pre-existing URLs.
-    # We do NOT clear here: if the expediente loaded Documento on open and SUMAC
-    # serves it from cache on re-click (no new network request), the pre-existing
-    # URL is the only way to save it.
+    # ── Strategy 0 (Documento only): left-pillbox download button ───────────────
+    # While anejos are active, the page has a two-column layout: Documento on the
+    # left, the selected Anejo on the right.  The left-side download button is
+    # unambiguously tied to the Documento PDF — no need to click the tab or guess
+    # which captured URL belongs to which document.
+    if not tab_label:
+        left_dl_btn = page.locator(
+            ".caseEntryDocumentContainer__leftPillbox"
+            " .caseEntryDocumentContainer__downloadButton"
+        )
+        if left_dl_btn.count() > 0:
+            left_title = ""
+            try:
+                h1 = page.locator(
+                    ".caseEntryDocumentContainer__leftPillbox"
+                    " .caseEntryDocumentContainer__documentHeader h1"
+                ).first
+                left_title = (h1.get_attribute("title") or h1.inner_text(timeout=1000) or "").strip()
+                left_title = re.sub(r'[\\/:*?"<>|.]+', '', left_title).strip()
+                left_title = re.sub(r'\s+', ' ', left_title)[:50]
+            except Exception:
+                left_title = ""
+            title_part = f" - {left_title}" if left_title else ""
+            try:
+                with page.expect_download(timeout=5000) as dl_info:
+                    left_dl_btn.click()
+                dl = dl_info.value
+                fname = f"{filename_prefix}{title_part}.pdf"
+                save_path = os.path.join("sumac_documents", fname)
+                dl.save_as(save_path)
+                print(f"    [Documento] Saved from left pillbox: {save_path}")
+                return True
+            except Exception as e:
+                print(f"    [Documento] Left pillbox button failed: {e}")
+
+            # Strategy 0b: the button sometimes opens the PDF inline rather than
+            # triggering a browser download.  Read the blob URL directly from the
+            # left-pillbox iframe — same technique used for anejos' right pillbox.
+            try:
+                left_url = page.locator(
+                    ".caseEntryDocumentContainer__leftPillbox iframe.PDFViewer__embedArea"
+                ).get_attribute("src", timeout=2000)
+                if left_url:
+                    fname = f"{filename_prefix}{title_part}.pdf"
+                    save_path = os.path.join("sumac_documents", fname)
+                    if _save_pdf_from_url(page, left_url, save_path, captured_pdf_data):
+                        print(f"    [Documento] Saved from left pillbox iframe: {save_path}")
+                        return True
+            except Exception:
+                pass
+
+            # Both 0a (button) and 0b (iframe src) failed while the left pillbox
+            # is present.  The entry has no downloadable PDF (e.g. a text-only
+            # ORDEN/ENTERADO).  Return now — falling through to the tab-click
+            # would fire Strategy 3's stale-URL fallback and save the wrong bytes.
+            print(f"    [Documento] Left pillbox present but no PDF found — skipping.")
+            return False
+
+    # ── Tab-click fallback (Strategies 0a/0b were absent or failed) ─────────────
+    # Snapshot captured URLs before clicking so we can identify what fires new.
+    # We do NOT clear the list: if SUMAC serves the Documento from cache on
+    # re-click (no new network request), the pre-click URL is the only handle we
+    # have for Strategy 3.
     urls_before_click = list(captured_pdf_urls)
     tab.first.click()
-    # Two-phase poll:
-    #   Phase 1 (0–2 s): wait for a new URL to appear in captured_pdf_urls.
-    #     If none arrives, the PDF was likely served from cache and its URL was
-    #     already in captured_pdf_urls before the click — fall through to Strategy 3.
-    #   Phase 2 (2–12 s): URL detected but response.body() (running in a background
-    #     thread) hasn't finished caching the bytes yet.  Keep waiting so that
-    #     Strategy 3 can save via the in-memory cache rather than urllib (which
-    #     often fails on one-time-token URLs).
+
+    # Two-phase poll after the tab click:
+    #   Phase 1 (0–2 s): watch for a new PDF URL to appear in captured_pdf_urls.
+    #     If nothing arrives the PDF was probably served from cache — stop early
+    #     and fall through to Strategy 3 with the pre-existing URL.
+    #   Phase 2 (2–15 s): URL appeared but response.body() hasn't been cached yet
+    #     (it runs in a background thread).  Keep waiting so Strategy 3 can use
+    #     the in-memory bytes instead of a urllib re-download, which often fails
+    #     for one-time-token URLs.
     for i in range(75):  # 75 × 200 ms = 15 s ceiling
         page.wait_for_timeout(200)
         new = [u for u in captured_pdf_urls if u not in urls_before_click]
@@ -214,12 +321,12 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
 
     title_part = f" - {doc_title}" if doc_title else ""
 
-    # Fast path: if the PDF was already captured by the network listener during
-    # the 2s wait, skip Strategy 1 & 2 entirely and go straight to Strategy 3.
-    # This avoids burning 1s timeouts when the PDF renders inline (the common case).
+    # If the network listener already captured a new URL during the poll above,
+    # jump straight to Strategy 3 — no point trying download buttons that would
+    # each burn a 1 s timeout on a PDF that already arrived via the network.
     new_urls_after_wait = [u for u in captured_pdf_urls if u not in urls_before_click]
     if not new_urls_after_wait:
-        # Strategy 1: dedicated download button (.caseEntriesView__downloadButton)
+        # ── Strategy 1: dedicated download button ─────────────────────────────
         dl_btn = page.locator(".caseEntriesView__downloadButton")
         if dl_btn.count() > 0:
             for j in range(dl_btn.count()):
@@ -228,7 +335,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
                     with page.expect_download(timeout=1000) as dl_info:
                         dl_btn.nth(j).click()
                     dl = dl_info.value
-                    fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}.pdf"
+                    fname = f"{filename_prefix}_{tab_label}{title_part}.pdf" if tab_label else f"{filename_prefix}{title_part}.pdf"
                     save_path = os.path.join("sumac_documents", fname)
                     dl.save_as(save_path)
                     print(f"    Saved: {save_path}")
@@ -236,7 +343,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
                 except Exception as e:
                     print(f"    Download button failed: {e}")
 
-        # Strategy 2: any other download-triggering links/buttons
+        # ── Strategy 2: generic download anchors ──────────────────────────────
         for selector in ["a[download]", "a[href*='.pdf']"]:
             elems = page.locator(selector)
             if elems.count() > 0:
@@ -245,7 +352,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
                         with page.expect_download(timeout=1000) as dl_info:
                             elems.nth(j).click()
                         dl = dl_info.value
-                        fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}.pdf"
+                        fname = f"{filename_prefix}_{tab_label}{title_part}.pdf" if tab_label else f"{filename_prefix}{title_part}.pdf"
                         save_path = os.path.join("sumac_documents", fname)
                         dl.save_as(save_path)
                         print(f"    Saved: {save_path}")
@@ -253,15 +360,18 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
                     except Exception:
                         pass
 
-    # Strategy 3: PDF URL intercepted from network traffic.
-    # Prefer URLs captured AFTER the tab click (fresh request). If none, fall
-    # back to pre-existing URLs — this covers the case where SUMAC serves the
-    # PDF from cache on re-click (e.g. Documento after Anejo interactions).
-    # The used URL is removed so it doesn't bleed into the next tab's fallback.
+    # ── Strategy 3: intercepted network URL ──────────────────────────────────
+    # Prefer URLs that arrived after the tab click (fresh request).  If none,
+    # fall back to pre-existing URLs — SUMAC sometimes serves cached PDFs
+    # without firing a new request.  The fallback list is reversed so that the
+    # most recently captured URL (most likely from the current expediente) is
+    # tried first, preventing stale bytes from an earlier expediente from being
+    # saved under the current expediente's filename.
+    # Consume the URL afterwards so it cannot bleed into the next tab's fallback.
     new_urls = new_urls_after_wait or [u for u in captured_pdf_urls if u not in urls_before_click]
-    urls_to_try = new_urls if new_urls else list(captured_pdf_urls)
+    urls_to_try = new_urls if new_urls else list(reversed(captured_pdf_urls))
     for j, url in enumerate(urls_to_try):
-        fname = f"{filename_prefix}_{tab_name}_{j+1}{title_part}.pdf"
+        fname = f"{filename_prefix}_{tab_label}{title_part}.pdf" if tab_label else f"{filename_prefix}{title_part}.pdf"
         save_path = os.path.join("sumac_documents", fname)
         print(f"    [{tab_name}] Saving intercepted PDF: {url}")
         if _save_pdf_from_url(page, url, save_path, captured_pdf_data):
@@ -274,18 +384,27 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
     return False
 
 
-def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captured_pdf_data):
+def _download_anejo_attachments(page, filename_prefix, captured_pdf_data):
     """
-    Download all PDFs attached as "Anejo" pills inside an expediente detail view.
+    Download all Anejo (attachment) PDFs inside an expediente detail view.
 
-    SUMAC renders these inside:
-        div.elementContainer.pillBox.caseEntryDocumentContainer.attachmentsPillbox
+    SUMAC layout when an Anejo pill is selected:
+      - A horizontal scrollable pill bar at the top lists all attachments.
+      - The main area splits into two columns:
+          LEFT  (.leftPillbox)  — always shows the Documento PDF
+          RIGHT (.rightPillbox) — shows the currently-selected Anejo PDF
+      - Each column has its own download button.
 
-    Each child element of that container is a clickable pill.  Clicking a pill
-    loads a PDF — either as a browser download or inline via PDF.js.  We handle
-    both cases using the same network-interception strategy used elsewhere.
+    Approach:
+      1. Iterate pills first-to-last.  SUMAC auto-selects the first pill on
+         load, so j=0 is already showing in the right pillbox — we skip the
+         click to avoid accidentally deselecting it (clicking a selected pill
+         in SUMAC toggles it off and reloads the Documento instead).
+      2. For each pill (after clicking it when needed), try the right-pillbox
+         download button (Strategy A).  Fall back to reading the right-pillbox
+         iframe src directly (Strategy B).
 
-    Filenames follow the pattern: <filename_prefix>_anejo_<n>.pdf
+    Filenames follow the pattern: <prefix>_anejo_<n> - <label>_<original>.pdf
     """
     # BEM class confirmed from DOM inspection.
     container = page.locator("div.caseEntryDocumentContainer__attachmentsPillbox")
@@ -314,12 +433,11 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
 
     print(f"    [Anejo] Found {pill_count} attachment(s).")
 
-    # Iterate last-to-first: clicking pill 1 first when the viewer already shows
-    # the Notificación PDF causes it to display pill 1's cached blob without
-    # firing a new network request, so we can't detect it.  Going in reverse
-    # means by the time we reach pill 1, the viewer holds a different pill's
-    # content, forcing a real reload and a fresh blob URL we can capture.
-    for j in range(pill_count - 1, -1, -1):
+    # Iterate first-to-last: clicking pill 0 first naturally de-selects any
+    # pre-selected last pill (SUMAC auto-selects the last anejo on load).
+    # By the time we reach the last pill it is no longer selected, so clicking
+    # it loads its own PDF instead of re-firing the Documento blob.
+    for j in range(pill_count):
         # Skip if this attachment index was already saved in a prior run.
         # Use a boundary check: the character after the number must be non-digit
         # so that e.g. anejo_1 does not falsely match anejo_10, anejo_11, etc.
@@ -341,96 +459,60 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
         # Sanitize for use in a filename: collapse whitespace, remove illegal chars, truncate.
         pill_label = re.sub(r'[\\/:*?"<>|]+', '', raw_label).strip()
         pill_label = re.sub(r'\s+', ' ', pill_label)[:50]
+        label_part = f" - {pill_label}" if pill_label else ""
 
-        # Snapshot BEFORE clicking so we can detect what the single click produces.
-        urls_before = list(captured_pdf_urls)
-
-        # Detect whether this pill is already selected (pre-loaded on page open).
-        # Clicking a selected tile may DE-select it, causing SUMAC to reload the
-        # main Documento — whose new blob we would mistake for the anejo blob.
-        # Instead, skip the click and use the last URL from the page-load snapshot,
-        # which is the pre-selected anejo's blob (fires after the Documento blob).
         try:
-            was_preselected = pills.nth(j).evaluate(
+            is_selected = pills.nth(j).evaluate(
                 "el => el.closest('.selectableTile__view')"
                 ".classList.contains('selectableTile__view-selected')"
             )
         except Exception:
-            was_preselected = False
+            is_selected = False
 
-        if was_preselected:
-            # The anejo blob was captured on page load — it is the last blob URL
-            # in urls_before (Documento fires first; anejo fires second).
-            preload_url = next(
-                (u for u in reversed(urls_before) if u.startswith("blob:")),
-                urls_before[-1] if urls_before else None,
-            )
-            if preload_url:
-                label_part = f" - {pill_label}" if pill_label else ""
-                fname = f"{filename_prefix}_anejo_{j + 1}{label_part}.pdf"
+        if not is_selected:
+            print(f"    [Anejo] Clicking attachment {j + 1}/{pill_count}: '{pill_label}'...")
+            pills.nth(j).evaluate("el => el.closest('.selectableTile__view').click()")
+            # Wait for the right pillbox to update with this anejo's PDF.
+            page.wait_for_timeout(5000)
+        else:
+            print(f"    [Anejo] Attachment {j + 1}/{pill_count}: '{pill_label}' (pre-selected)")
+
+        # ── Strategy A: right-pillbox download button ─────────────────────────
+        right_dl_btn = page.locator(
+            ".caseEntryDocumentContainer__rightPillbox .caseEntryDocumentContainer__downloadButton"
+        )
+        if right_dl_btn.count() > 0:
+            try:
+                with page.expect_download(timeout=5000) as dl_info:
+                    right_dl_btn.click()
+                dl = dl_info.value
+                # Strip whatever extension the server provides and force .pdf —
+                # SUMAC sometimes omits the extension or sends a non-pdf suffix.
+                base = Path(dl.suggested_filename).stem if dl.suggested_filename else "attachment"
+                fname = f"{filename_prefix}_anejo_{j + 1}{label_part}_{base}.pdf"
                 save_path = os.path.join("sumac_documents", fname)
-                print(f"    [Anejo] Pre-selected pill — using page-load URL for attachment {j + 1}.")
-                if _save_pdf_from_url(page, preload_url, save_path, captured_pdf_data):
-                    captured_pdf_urls[:] = [u for u in captured_pdf_urls if u != preload_url]
-                    captured_pdf_data.pop(preload_url, None)
-                    print(f"    [Anejo] Saved: {save_path}")
-                    continue
-            print(f"    [Anejo] Could not save pre-selected attachment {j + 1}.")
-            continue
+                dl.save_as(save_path)
+                print(f"    [Anejo] Saved: {save_path}")
+                page.wait_for_timeout(2000)
+                continue
+            except Exception as e:
+                print(f"    [Anejo] Right download button failed: {e}")
 
-        print(f"    [Anejo] Clicking attachment {j + 1}/{pill_count}: '{pill_label}'...")
-
+        # ── Strategy B: right-pillbox iframe src (blob URL) ──────────────────
         try:
-            # Strategy A: click triggers a browser download event.
-            # Use a JS click on the outer tile wrapper (.selectableTile__view)
-            # so the event fires directly on the element with the click handler,
-            # bypassing Playwright's coordinate/scroll translation entirely.
-            # This works for pills at any scroll position, including edge pills
-            # that are outside the visible area of the horizontal scroll container.
-            with page.expect_download(timeout=1500) as dl_info:
-                pills.nth(j).evaluate("el => el.closest('.selectableTile__view').click()")
-            dl = dl_info.value
-            base = dl.suggested_filename or 'attachment.pdf'
-            label_part = f" - {pill_label}" if pill_label else ""
-            fname = f"{filename_prefix}_anejo_{j + 1}{label_part}_{base}"
-            save_path = os.path.join("sumac_documents", fname)
-            dl.save_as(save_path)
-            # Remove any URLs captured during this click so they don't leak into tab fallbacks.
-            new_captured = [u for u in captured_pdf_urls if u not in urls_before]
-            for u in new_captured:
-                captured_pdf_data.pop(u, None)
-            captured_pdf_urls[:] = [u for u in captured_pdf_urls if u in urls_before]
-            print(f"    [Anejo] Saved: {save_path}")
-            continue
+            anejo_url = page.locator(
+                ".caseEntryDocumentContainer__rightPillbox iframe.PDFViewer__embedArea"
+            ).get_attribute("src", timeout=5000)
         except Exception:
-            # No download event — Strategy A's click still happened; the PDF
-            # likely loaded inline as a blob. Fall through to Strategy B.
-            pass
+            anejo_url = None
 
-        # Strategy B: wait for the blob that the Strategy A click produced,
-        # then save it.  No second click — the pill was already clicked above.
-        page.wait_for_timeout(8000)
-        new_urls = [u for u in captured_pdf_urls if u not in urls_before]
-        new_blobs = [u for u in new_urls if u.startswith("blob:")]
-        url = (new_blobs or new_urls or [None])[-1]
-
-        # Strategy C: single pill, was pre-selected on page load — its blob is
-        # in urls_before (handled above for multi-pill cases via was_preselected).
-        if not url and pill_count == 1:
-            url = urls_before[-1] if urls_before else None
-            if url:
-                print(f"    [Anejo] Single pre-selected pill — using page-load URL.")
-
-        if url:
-            label_part = f" - {pill_label}" if pill_label else ""
+        if anejo_url:
             fname = f"{filename_prefix}_anejo_{j + 1}{label_part}.pdf"
             save_path = os.path.join("sumac_documents", fname)
-            print(f"    [Anejo] Saving intercepted PDF: {url}")
-            if _save_pdf_from_url(page, url, save_path, captured_pdf_data):
-                # Consume the URL so it can't bleed into Documento/Notificación fallbacks.
-                captured_pdf_urls[:] = [u for u in captured_pdf_urls if u != url]
-                captured_pdf_data.pop(url, None)
+            print(f"    [Anejo] Saving from right pillbox iframe: {anejo_url}")
+            if _save_pdf_from_url(page, anejo_url, save_path, captured_pdf_data):
                 print(f"    [Anejo] Saved: {save_path}")
+                page.wait_for_timeout(2000)
                 continue
 
         print(f"    [Anejo] Could not save attachment {j + 1}.")
@@ -438,14 +520,20 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captur
 
 def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captured_pdf_urls, captured_pdf_data):
     """
-    Level 3: click an expediente tile, check Documento/Notificación tabs,
-    then go back to the case detail view (Level 2).
+    Level 3: download all PDFs from one expediente, then return to Level 2.
 
-    exp_idx      — zero-based position of the tile in the current DOM list.
-    exp_number   — human-readable expediente number (used in saved filenames).
-    captured_pdf_urls — shared list populated by the network response listener;
-                        passed into each tab handler so Strategy 3 can use it.
-    captured_pdf_data — dict of url→bytes captured at response time; avoids re-download.
+    Order matters:
+      1. Anejos first — the anejo pillbox is only visible in the default
+         expediente view.  Clicking any tab collapses it.
+      2. Tabs (Notificación, Documento) after anejos.  Documento is downloaded
+         via the left-pillbox button while the anejo view is still active;
+         it falls back to a tab click only for expedientes without anejos.
+
+    exp_idx   — zero-based tile index in the current DOM (re-queried here
+                because prior navigation may have refreshed the list).
+    exp_number — human-readable expediente number embedded in saved filenames.
+    captured_pdf_urls / captured_pdf_data — shared network-capture buffers
+                passed to _download_from_tab for Strategy 3 fallback.
     """
     # Re-query tiles here because navigating back from a previous expediente
     # can trigger a DOM refresh, potentially invalidating stale locators.
@@ -455,6 +543,12 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
         return
 
     print(f"  Expediente {exp_idx + 1}: #{exp_number}")
+    # Clear network-capture buffers from previous expedientes so that Strategy 3's
+    # fallback only ever sees URLs from the current expediente.  Without this, a
+    # stale blob URL captured during an earlier expediente can bleed into a later
+    # one that has no downloadable PDF (e.g. a text-only Documento entry).
+    captured_pdf_urls.clear()
+    captured_pdf_data.clear()
     tiles.nth(exp_idx).click()
     # Wait until the expediente detail renders (tab buttons or document container appear).
     # Falls back to a short fixed wait if those selectors never show up.
@@ -470,32 +564,20 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     date_prefix = f"{exp_date}_" if exp_date else ""
     filename_prefix = f"{date_prefix}[{exp_number}]_{case_number}"
 
-    # Check for Anejo (attachment) pills BEFORE clicking any tab, because the
-    # pillbox may only be visible in the default expediente view.
-    # NOTE: do NOT clear captured_pdf_urls before this call — the pre-selected
-    # pill's PDF is captured during the tile click above, and the anejo function
-    # needs those page-load URLs as a fallback for single-pill cases.
-    _download_anejo_attachments(page, filename_prefix, captured_pdf_urls, captured_pdf_data)
+    # 1. Documento first — uses the left-pillbox download button, which is
+    #    present as soon as the expediente opens (SUMAC auto-selects the first
+    #    anejo, showing the two-column layout).  No tab click is needed, so
+    #    the anejo pillbox stays intact for step 2.  For expedientes without
+    #    anejos the left pillbox is absent and the function falls back to a
+    #    tab click automatically.
+    _download_from_tab(page, "Documento", filename_prefix, captured_pdf_urls, captured_pdf_data)
 
-    # After anejos, snapshot any remaining page-load URLs as a fallback for
-    # Documento. SUMAC auto-loads Documento when the expediente opens, but after
-    # clicking Notificación first, it may serve Documento from cache with no new
-    # network request — this snapshot is the only way to save it in that case.
-    doc_fallback_urls = list(captured_pdf_urls)
-    doc_fallback_data = dict(captured_pdf_data)
+    # 2. Anejos — the pillbox is still visible because no tab was clicked above.
+    _download_anejo_attachments(page, filename_prefix, captured_pdf_data)
 
-    # Clear so stale URLs don't leak into tab downloads.
-    captured_pdf_urls.clear()
-    captured_pdf_data.clear()
-
-    for tab_name in TABS_TO_CHECK:
-        if tab_name == "Documento":
-            for u in doc_fallback_urls:
-                if u not in captured_pdf_urls:
-                    captured_pdf_urls.append(u)
-                    if u in doc_fallback_data:
-                        captured_pdf_data[u] = doc_fallback_data[u]
-        _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captured_pdf_data)
+    # 3. Notificación last — clicking its tab changes the view (pillbox gone),
+    #    but anejos are already finished by this point.
+    _download_from_tab(page, "Notificación", filename_prefix, captured_pdf_urls, captured_pdf_data)
 
     # Return to case detail (Level 2) using browser history.
     # wait_for_selector ensures the expediente list is ready before the caller
@@ -507,15 +589,17 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
 def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, captured_pdf_data,
                   tile_selector=".courtNotificationsBox__tile", label="Notification"):
     """
-    Level 2: click a case tile to open its detail view, iterate over every
-    expediente inside it, then navigate back to the cases list (Level 1).
+    Level 2: open one case, process its expedientes, then return to Level 1.
 
-    case_idx      — zero-based index into the current case tile list.
-    case_number   — human-readable case number extracted before any navigation,
-                    so it remains valid even after the DOM is refreshed.
-    tile_selector — CSS selector for the panel's tiles (differs between the top
-                    notification panel and the bottom-left "Mis Casos" panel).
-    label         — human-readable name for log messages ("Notification" or "Case").
+    Expediente numbers are snapshotted before any navigation because the tile
+    list disappears from the DOM once we drill into an expediente.  Up to 12
+    expedientes are processed per case (configured in the loop below).
+
+    case_idx      — zero-based tile index; re-queried after each navigation
+                    because the panel may still be rendering on return.
+    case_number   — extracted before navigation so it stays valid after DOM refresh.
+    tile_selector — differs between the top-panel and bottom-panel tiles.
+    label         — used in log output ("Notification" or "Case").
     """
     # Re-query tiles using the correct selector for this panel.
     # Wait for the specific tile at case_idx to be visible rather than doing an
@@ -570,7 +654,7 @@ def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, c
 
     print(f"  Found {exp_count} expedientes: {exp_numbers}")
 
-    for i, exp_number in enumerate(exp_numbers[:10]):
+    for i, exp_number in enumerate(exp_numbers[:12]):
         try:
             _process_expediente(page, i, case_number, exp_number, exp_dates[i], captured_pdf_urls, captured_pdf_data)
         except Exception as e:
