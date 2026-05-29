@@ -173,7 +173,8 @@ def _parse_date_es(text):
     return ""
 
 
-def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captured_pdf_data):
+def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captured_pdf_data,
+                       stale_blob_srcs=None):
     """
     Download the PDF for a given tab (Notificación or Documento) inside an
     expediente detail view.  Returns True as soon as one PDF is saved, False
@@ -189,6 +190,11 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
          scrape_all_pdfs) — fallback for PDFs rendered inline via PDF.js.
 
     For Notificación, only strategies 1–3 apply (no left-pillbox button).
+
+    stale_blob_srcs — set of blob: URLs that were already in the browser's DOM
+                      before the current expediente was opened.  Any blob URL
+                      found in this set is from a previous expediente's render
+                      and must be skipped to prevent cross-expediente contamination.
     """
     # Locate the tab button — SUMAC sometimes uses a title attribute, sometimes
     # just inner text, so we fall back to text-based filtering.
@@ -260,11 +266,17 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
             # Strategy 0b: the button sometimes opens the PDF inline rather than
             # triggering a browser download.  Read the blob URL directly from the
             # left-pillbox iframe — same technique used for anejos' right pillbox.
+            # Guard: only use the blob URL if the iframe is VISIBLE (not hidden) and
+            # not in stale_blob_srcs (blobs from previous expedientes persist in
+            # browser memory and may still appear in hidden DOM nodes).
             try:
-                left_url = page.locator(
+                left_iframe_loc = page.locator(
                     ".caseEntryDocumentContainer__leftPillbox iframe.PDFViewer__embedArea"
-                ).get_attribute("src", timeout=2000)
-                if left_url:
+                )
+                left_url = None
+                if left_iframe_loc.count() > 0 and left_iframe_loc.first.is_visible():
+                    left_url = left_iframe_loc.first.get_attribute("src", timeout=2000)
+                if left_url and (stale_blob_srcs is None or left_url not in stale_blob_srcs):
                     fname = f"{filename_prefix}{title_part}.pdf"
                     save_path = os.path.join("sumac_documents", fname)
                     if _save_pdf_from_url(page, left_url, save_path, captured_pdf_data):
@@ -326,8 +338,46 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
     # each burn a 1 s timeout on a PDF that already arrived via the network.
     new_urls_after_wait = [u for u in captured_pdf_urls if u not in urls_before_click]
     if not new_urls_after_wait:
+        # ── Strategy 0c: read PDF viewer iframe src directly ──────────────────
+        # When SUMAC serves the PDF from browser cache (no new network request
+        # fires), the iframe may already be showing the correct PDF.
+        # Two safety guards prevent reading stale content from previous expedientes:
+        #   1. Container-specific selector — Notificación iframes live in
+        #      caseEntryNotificationsContainer__mainPillbox; using that selector
+        #      avoids accidentally reading a hidden left-pillbox iframe that
+        #      SUMAC's SPA left in the DOM from an earlier expediente.
+        #   2. is_visible() — hidden iframes (display:none) are from prior views.
+        #   3. stale_blob_srcs check — blob: URLs that existed before this
+        #      expediente was opened belong to previous expediente renders.
+        try:
+            if tab_label:
+                # Notificación: scope to the notification-specific container.
+                iframe_sel = (
+                    ".caseEntryNotificationsContainer__mainPillbox"
+                    " iframe.PDFViewer__embedArea"
+                )
+            else:
+                # Documento (no-anejos path): use any visible iframe.
+                iframe_sel = "iframe.PDFViewer__embedArea"
+            tab_iframe_loc = page.locator(iframe_sel).first
+            tab_iframe_url = None
+            if tab_iframe_loc.count() > 0 and tab_iframe_loc.is_visible():
+                tab_iframe_url = tab_iframe_loc.get_attribute("src", timeout=2000)
+            if tab_iframe_url and (stale_blob_srcs is None or tab_iframe_url not in stale_blob_srcs):
+                fname = f"{filename_prefix}_{tab_label}{title_part}.pdf" if tab_label else f"{filename_prefix}{title_part}.pdf"
+                save_path = os.path.join("sumac_documents", fname)
+                if _save_pdf_from_url(page, tab_iframe_url, save_path, captured_pdf_data):
+                    print(f"    [{tab_name}] Saved from iframe src: {save_path}")
+                    return True
+        except Exception:
+            pass
+
         # ── Strategy 1: dedicated download button ─────────────────────────────
-        dl_btn = page.locator(".caseEntriesView__downloadButton")
+        # Documento tab uses .caseEntriesView__downloadButton;
+        # Notificación tab uses .caseEntryReceiptContainer__downloadButton.
+        dl_btn = page.locator(
+            ".caseEntriesView__downloadButton, .caseEntryReceiptContainer__downloadButton"
+        )
         if dl_btn.count() > 0:
             for j in range(dl_btn.count()):
                 try:
@@ -543,10 +593,20 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
         return
 
     print(f"  Expediente {exp_idx + 1}: #{exp_number}")
+    # Snapshot every blob: URL currently in the DOM before navigating into the
+    # expediente.  SUMAC's SPA keeps old blob URLs alive in browser memory even
+    # after navigating away; any blob URL that exists NOW belongs to a previous
+    # expediente and must not be reused for this one.
+    _stale_blob_srcs: set = set()
+    try:
+        for loc in page.locator("iframe.PDFViewer__embedArea").all():
+            s = loc.get_attribute("src", timeout=300)
+            if s and s.startswith("blob:"):
+                _stale_blob_srcs.add(s)
+    except Exception:
+        pass
     # Clear network-capture buffers from previous expedientes so that Strategy 3's
-    # fallback only ever sees URLs from the current expediente.  Without this, a
-    # stale blob URL captured during an earlier expediente can bleed into a later
-    # one that has no downloadable PDF (e.g. a text-only Documento entry).
+    # fallback only ever sees URLs from the current expediente.
     captured_pdf_urls.clear()
     captured_pdf_data.clear()
     tiles.nth(exp_idx).click()
@@ -570,14 +630,28 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     #    the anejo pillbox stays intact for step 2.  For expedientes without
     #    anejos the left pillbox is absent and the function falls back to a
     #    tab click automatically.
-    _download_from_tab(page, "Documento", filename_prefix, captured_pdf_urls, captured_pdf_data)
+    _download_from_tab(page, "Documento", filename_prefix, captured_pdf_urls, captured_pdf_data,
+                       _stale_blob_srcs)
 
     # 2. Anejos — the pillbox is still visible because no tab was clicked above.
     _download_anejo_attachments(page, filename_prefix, captured_pdf_data)
 
     # 3. Notificación last — clicking its tab changes the view (pillbox gone),
     #    but anejos are already finished by this point.
-    _download_from_tab(page, "Notificación", filename_prefix, captured_pdf_urls, captured_pdf_data)
+    #    Update the stale set to include any blob URLs that loaded during
+    #    Documento/anejos processing — those must not bleed into Notificación.
+    try:
+        for loc in page.locator("iframe.PDFViewer__embedArea").all():
+            s = loc.get_attribute("src", timeout=300)
+            if s and s.startswith("blob:"):
+                _stale_blob_srcs.add(s)
+    except Exception:
+        pass
+    # Also clear network-capture buffers so Strategy 3 only sees Notificación URLs.
+    captured_pdf_urls.clear()
+    captured_pdf_data.clear()
+    _download_from_tab(page, "Notificación", filename_prefix, captured_pdf_urls, captured_pdf_data,
+                       _stale_blob_srcs)
 
     # Return to case detail (Level 2) using browser history.
     # wait_for_selector ensures the expediente list is ready before the caller
