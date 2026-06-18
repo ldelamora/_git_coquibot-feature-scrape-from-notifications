@@ -33,14 +33,20 @@
 #           (3) URL captured passively from network responses (on_response)
 
 import os
+import sys
 from pathlib import Path
 
-# When frozen by PyInstaller, Playwright looks for Chromium inside the temp
-# bundle directory instead of the user's AppData folder.  Override with the
-# standard install location so the exe works on any machine after running
-# "playwright install chromium" once.
+# Point Playwright to the correct Chromium installation.
+# When frozen: look next to the exe first (Dropbox-portable setup),
+#              then fall back to standard AppData location.
+# When running as a script: use standard AppData location.
 if "PLAYWRIGHT_BROWSERS_PATH" not in os.environ:
-    _browsers = Path.home() / "AppData" / "Local" / "ms-playwright"
+    if getattr(sys, 'frozen', False):
+        _browsers = Path(sys.executable).parent / "ms-playwright"
+        if not _browsers.exists():
+            _browsers = Path.home() / "AppData" / "Local" / "ms-playwright"
+    else:
+        _browsers = Path.home() / "AppData" / "Local" / "ms-playwright"
     if _browsers.exists():
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_browsers)
 
@@ -140,6 +146,7 @@ def _already_downloaded(prefix):
     return any(f.name.startswith(prefix) for f in dest.iterdir() if f.is_file())
 
 
+
 MESES = {
     "enero": "01", "febrero": "02", "marzo": "03", "abril": "04",
     "mayo": "05", "junio": "06", "julio": "07", "agosto": "08",
@@ -162,15 +169,6 @@ def _wait_for_all_tiles(page, timeout=5000):
     except Exception:
         pass  # Bottom panel may be empty — not an error
 
-
-def _parse_date_es(text):
-    """Parse a Spanish date string 'dd de mes de yyyy' → 'yyyy-mm-dd', or '' on failure."""
-    m = re.search(r"(\d{1,2}) de (\w+) de (\d{4})", text, re.IGNORECASE)
-    if m:
-        month = MESES.get(m.group(2).lower(), "")
-        if month:
-            return f"{m.group(3)}-{month}-{m.group(1).zfill(2)}"
-    return ""
 
 
 def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captured_pdf_data,
@@ -308,8 +306,19 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
     #     (it runs in a background thread).  Keep waiting so Strategy 3 can use
     #     the in-memory bytes instead of a urllib re-download, which often fails
     #     for one-time-token URLs.
+    # Each iteration also checks for id="Nohaynotificaciones" so that an empty
+    # notification tab is detected as soon as SUMAC renders it — regardless of
+    # how long the SPA takes — without burning through all 15 seconds.
     for i in range(75):  # 75 × 200 ms = 15 s ceiling
         page.wait_for_timeout(200)
+        if tab_label:
+            try:
+                if (page.locator("#Nohaynotificaciones").is_visible()
+                        or page.locator("p.emptyContainerMessage").is_visible()):
+                    print(f"    [{tab_name}] No hay notificaciones — skipping.")
+                    return False
+            except Exception:
+                pass
         new = [u for u in captured_pdf_urls if u not in urls_before_click]
         if new and any(u in captured_pdf_data for u in new):
             break  # URL + bytes cached — ready to save
@@ -318,11 +327,31 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
         if new and i >= 60:
             break  # URL found but body never cached after 12 s — try anyway
 
-    # Read the document title shown in the tab header (h1 inside the document
-    # header container).  Prefer the title attribute; fall back to inner text.
+    # Post-loop guard: the polling loop only runs for 2 s before breaking on
+    # "no new URL".  If SUMAC rendered the empty state slowly, or if is_visible()
+    # returned False due to CSS (e.g. opacity/height tricks), we may have missed it.
+    # Use count() > 0 here — DOM presence alone is sufficient because SUMAC only
+    # inserts #Nohaynotificaciones when there genuinely are no notifications.
+    if tab_label:
+        try:
+            if (page.locator("#Nohaynotificaciones").count() > 0
+                    or page.locator("p.emptyContainerMessage").count() > 0):
+                print(f"    [{tab_name}] No hay notificaciones — skipping.")
+                return False
+        except Exception:
+            pass
+
+    # Read the document title shown in the tab header.  Use a tab-specific
+    # selector so a hidden Documento header never bleeds into Notificación.
     doc_title = ""
     try:
-        h1 = page.locator(".caseEntryDocumentContainer__documentHeader h1").first
+        if tab_label:
+            # Notificación: title is in the notification PDF viewer heading.
+            h1 = page.locator(
+                ".caseEntryNotificationsContainer__mainPillbox h1"
+            ).first
+        else:
+            h1 = page.locator(".caseEntryDocumentContainer__documentHeader h1").first
         doc_title = (h1.get_attribute("title") or h1.inner_text(timeout=1000) or "").strip()
         # Sanitize: remove characters illegal in filenames, collapse whitespace.
         doc_title = re.sub(r'[\\/:*?"<>|.]+', '', doc_title).strip()
@@ -373,11 +402,13 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
             pass
 
         # ── Strategy 1: dedicated download button ─────────────────────────────
-        # Documento tab uses .caseEntriesView__downloadButton;
-        # Notificación tab uses .caseEntryReceiptContainer__downloadButton.
-        dl_btn = page.locator(
-            ".caseEntriesView__downloadButton, .caseEntryReceiptContainer__downloadButton"
-        )
+        # Use a tab-specific selector so we never accidentally click a hidden
+        # Documento button while downloading Notificación (SUMAC's SPA hides
+        # elements with CSS but keeps them in the DOM).
+        if tab_label:
+            dl_btn = page.locator(".caseEntryReceiptContainer__downloadButton")
+        else:
+            dl_btn = page.locator(".caseEntriesView__downloadButton")
         if dl_btn.count() > 0:
             for j in range(dl_btn.count()):
                 try:
@@ -394,11 +425,15 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
                     print(f"    Download button failed: {e}")
 
         # ── Strategy 2: generic download anchors ──────────────────────────────
+        # is_visible() filters out anchors from hidden tab views (SUMAC's SPA
+        # hides rather than removes the inactive tab's DOM).
         for selector in ["a[download]", "a[href*='.pdf']"]:
             elems = page.locator(selector)
             if elems.count() > 0:
                 for j in range(elems.count()):
                     try:
+                        if not elems.nth(j).is_visible():
+                            continue
                         with page.expect_download(timeout=1000) as dl_info:
                             elems.nth(j).click()
                         dl = dl_info.value
@@ -411,15 +446,29 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
                         pass
 
     # ── Strategy 3: intercepted network URL ──────────────────────────────────
-    # Prefer URLs that arrived after the tab click (fresh request).  If none,
-    # fall back to pre-existing URLs — SUMAC sometimes serves cached PDFs
-    # without firing a new request.  The fallback list is reversed so that the
-    # most recently captured URL (most likely from the current expediente) is
-    # tried first, preventing stale bytes from an earlier expediente from being
-    # saved under the current expediente's filename.
+    # Prefer URLs that arrived after the tab click (fresh request).
+    #
+    # Documento: fall back to pre-click captured URLs when SUMAC serves the PDF
+    # from its own SPA cache (no new network request fires after the tab click).
+    # The fallback list is reversed so the most-recent URL is tried first.
+    #
+    # Notificación: NEVER fall back to pre-click captured URLs.  The buffer is
+    # cleared in _process_expediente immediately before this call, so any URL
+    # already in captured_pdf_urls when we reach this point is a delayed HTTP
+    # response from an anejo or Documento download that arrived after the clear —
+    # using it would save the wrong PDF under the Notificación filename.
+    #
     # Consume the URL afterwards so it cannot bleed into the next tab's fallback.
     new_urls = new_urls_after_wait or [u for u in captured_pdf_urls if u not in urls_before_click]
-    urls_to_try = new_urls if new_urls else list(reversed(captured_pdf_urls))
+    if tab_label:
+        # Notificación: only use URLs that arrived after the tab click.
+        urls_to_try = new_urls
+    else:
+        # Documento: fall back to pre-tab-click URLs when SUMAC serves from its
+        # own SPA cache (no new network request fires).  Use urls_before_click
+        # (not all of captured_pdf_urls) so any speculative post-click responses
+        # — such as a Notificación PDF prefetched by SUMAC — are excluded.
+        urls_to_try = new_urls if new_urls else list(reversed(urls_before_click))
     for j, url in enumerate(urls_to_try):
         fname = f"{filename_prefix}_{tab_label}{title_part}.pdf" if tab_label else f"{filename_prefix}{title_part}.pdf"
         save_path = os.path.join("sumac_documents", fname)
@@ -434,7 +483,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
     return False
 
 
-def _download_anejo_attachments(page, filename_prefix, captured_pdf_data):
+def _download_anejo_attachments(page, filename_prefix, captured_pdf_data, session_blob_srcs=None):
     """
     Download all Anejo (attachment) PDFs inside an expediente detail view.
 
@@ -549,18 +598,30 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_data):
                 print(f"    [Anejo] Right download button failed: {e}")
 
         # ── Strategy B: right-pillbox iframe src (blob URL) ──────────────────
+        # Guards mirror Strategy 0b/0c in _download_from_tab:
+        #   1. is_visible() — the right pillbox may still hold the previous
+        #      anejo's iframe in the DOM after a click; a hidden iframe means
+        #      the render has not updated yet and the src is stale.
+        #   2. session_blob_srcs — rejects blob URLs from previous expedientes
+        #      that the SPA keeps alive in browser memory.
+        #   3. Pop from captured_pdf_data on success — prevents the byte cache
+        #      entry from bleeding into later Strategy 3 fallbacks.
         try:
-            anejo_url = page.locator(
+            right_iframe_loc = page.locator(
                 ".caseEntryDocumentContainer__rightPillbox iframe.PDFViewer__embedArea"
-            ).get_attribute("src", timeout=5000)
+            )
+            anejo_url = None
+            if right_iframe_loc.count() > 0 and right_iframe_loc.first.is_visible():
+                anejo_url = right_iframe_loc.first.get_attribute("src", timeout=5000)
         except Exception:
             anejo_url = None
 
-        if anejo_url:
+        if anejo_url and (session_blob_srcs is None or anejo_url not in session_blob_srcs):
             fname = f"{filename_prefix}_anejo_{j + 1}{label_part}.pdf"
             save_path = os.path.join("sumac_documents", fname)
             print(f"    [Anejo] Saving from right pillbox iframe: {anejo_url}")
             if _save_pdf_from_url(page, anejo_url, save_path, captured_pdf_data):
+                captured_pdf_data.pop(anejo_url, None)
                 print(f"    [Anejo] Saved: {save_path}")
                 page.wait_for_timeout(2000)
                 continue
@@ -568,7 +629,8 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_data):
         print(f"    [Anejo] Could not save attachment {j + 1}.")
 
 
-def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captured_pdf_urls, captured_pdf_data):
+def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captured_pdf_urls, captured_pdf_data,
+                        session_blob_srcs=None):
     """
     Level 3: download all PDFs from one expediente, then return to Level 2.
 
@@ -584,6 +646,12 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     exp_number — human-readable expediente number embedded in saved filenames.
     captured_pdf_urls / captured_pdf_data — shared network-capture buffers
                 passed to _download_from_tab for Strategy 3 fallback.
+    session_blob_srcs — set that accumulates every blob: URL seen across the
+                entire session (all cases, all expedientes).  Any blob that
+                existed before the current expediente tile click is stale and
+                must not be reused — this prevents cross-case contamination
+                because the SPA keeps old blob objects alive in browser memory
+                even after navigating to a different case.
     """
     # Re-query tiles here because navigating back from a previous expediente
     # can trigger a DOM refresh, potentially invalidating stale locators.
@@ -593,16 +661,18 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
         return
 
     print(f"  Expediente {exp_idx + 1}: #{exp_number}")
-    # Snapshot every blob: URL currently in the DOM before navigating into the
-    # expediente.  SUMAC's SPA keeps old blob URLs alive in browser memory even
-    # after navigating away; any blob URL that exists NOW belongs to a previous
-    # expediente and must not be reused for this one.
-    _stale_blob_srcs: set = set()
+    # Accumulate every blob: URL currently in the DOM into the session-wide
+    # stale set before navigating into this expediente.  SUMAC's SPA keeps old
+    # blob objects alive in browser memory across SPA navigation — even across
+    # different cases — so any blob that exists NOW (before the tile click)
+    # belongs to a previous render and must not be reused for this expediente.
+    if session_blob_srcs is None:
+        session_blob_srcs = set()
     try:
         for loc in page.locator("iframe.PDFViewer__embedArea").all():
             s = loc.get_attribute("src", timeout=300)
             if s and s.startswith("blob:"):
-                _stale_blob_srcs.add(s)
+                session_blob_srcs.add(s)
     except Exception:
         pass
     # Clear network-capture buffers from previous expedientes so that Strategy 3's
@@ -620,6 +690,20 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     except Exception:
         page.wait_for_timeout(1000)
 
+    # Confirm the case number from the page heading before building the prefix.
+    # The same .caseViewHeading__mainHeading heading shown on the case list is
+    # also present here; its title attribute is "{case_number} | {parties}".
+    # Reading it here ensures the filename uses what SUMAC is actually showing,
+    # not whatever was passed in from the notification tile.
+    try:
+        heading_title = page.locator(".caseViewHeading__mainHeading").first.get_attribute("title", timeout=3000) or ""
+        page_case_number = heading_title.split(" | ")[0].strip()
+        if page_case_number and page_case_number != case_number:
+            print(f"    Page shows case {page_case_number} (expected {case_number}) — using page value.")
+            case_number = page_case_number
+    except Exception:
+        pass
+
     # Build the filename prefix: date first so files sort chronologically.
     date_prefix = f"{exp_date}_" if exp_date else ""
     filename_prefix = f"{date_prefix}[{exp_number}]_{case_number}"
@@ -631,37 +715,48 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     #    anejos the left pillbox is absent and the function falls back to a
     #    tab click automatically.
     _download_from_tab(page, "Documento", filename_prefix, captured_pdf_urls, captured_pdf_data,
-                       _stale_blob_srcs)
+                       session_blob_srcs)
 
     # 2. Anejos — the pillbox is still visible because no tab was clicked above.
-    _download_anejo_attachments(page, filename_prefix, captured_pdf_data)
+    _download_anejo_attachments(page, filename_prefix, captured_pdf_data, session_blob_srcs)
 
     # 3. Notificación last — clicking its tab changes the view (pillbox gone),
     #    but anejos are already finished by this point.
-    #    Update the stale set to include any blob URLs that loaded during
-    #    Documento/anejos processing — those must not bleed into Notificación.
+    #    Add any new blob URLs that loaded during Documento/anejos into the
+    #    session stale set so they cannot bleed into Notificación.
     try:
         for loc in page.locator("iframe.PDFViewer__embedArea").all():
             s = loc.get_attribute("src", timeout=300)
             if s and s.startswith("blob:"):
-                _stale_blob_srcs.add(s)
+                session_blob_srcs.add(s)
     except Exception:
         pass
-    # Also clear network-capture buffers so Strategy 3 only sees Notificación URLs.
+    # Clear network-capture buffers, then pause briefly so any HTTP responses
+    # still in-flight from Documento/anejo downloads can arrive and be discarded.
+    # Without the wait, a delayed anejo response could arrive between the clear
+    # and the Notificación tab click, sneak into captured_pdf_urls, and be tried
+    # as the notification URL.  The second clear removes anything that landed
+    # during the drain wait.
+    captured_pdf_urls.clear()
+    captured_pdf_data.clear()
+    page.wait_for_timeout(400)
     captured_pdf_urls.clear()
     captured_pdf_data.clear()
     _download_from_tab(page, "Notificación", filename_prefix, captured_pdf_urls, captured_pdf_data,
-                       _stale_blob_srcs)
+                       session_blob_srcs)
 
     # Return to case detail (Level 2) using browser history.
     # wait_for_selector ensures the expediente list is ready before the caller
     # tries to access the next tile index.
     page.go_back()
-    page.wait_for_selector(".caseEntryTile__simpleView", timeout=5000)
+    # state="visible" — hidden residual tiles from the expediente view must not
+    # satisfy this check; we need the case-detail tile list to be genuinely visible.
+    page.wait_for_selector(".caseEntryTile__simpleView", state="visible", timeout=5000)
 
 
 def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, captured_pdf_data,
-                  tile_selector=".courtNotificationsBox__tile", label="Notification"):
+                  tile_selector=".courtNotificationsBox__tile", label="Notification",
+                  session_blob_srcs=None):
     """
     Level 2: open one case, process its expedientes, then return to Level 1.
 
@@ -675,30 +770,65 @@ def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, c
     tile_selector — differs between the top-panel and bottom-panel tiles.
     label         — used in log output ("Notification" or "Case").
     """
-    # Re-query tiles using the correct selector for this panel.
-    # Wait for the specific tile at case_idx to be visible rather than doing an
-    # instant count check — the panel may still be rendering after navigation back.
+    # Find the tile for this case by its case number text rather than by the
+    # snapshot index.  SUMAC may reorder or remove notification tiles during a
+    # session (e.g. marking them as "read"), which causes index drift and makes
+    # tiles.nth(case_idx) click the wrong case — leading to the same content
+    # being saved under multiple different case number filenames.
     tiles = page.locator(tile_selector)
+    target_tile = None
+    for j in range(tiles.count()):
+        try:
+            cn_loc = tiles.nth(j).locator(
+                ".notificationTile__caseNumber, .notificationRecourseTile__recourseNumber"
+            ).first
+            if cn_loc.count() > 0 and cn_loc.inner_text(timeout=1000).strip() == case_number:
+                target_tile = tiles.nth(j)
+                break
+        except Exception:
+            pass
+    if target_tile is None:
+        # Fall back to index if case number text was not found in any tile.
+        if case_idx >= tiles.count():
+            print(f"  {label} tile for {case_number} not found, skipping.")
+            return
+        print(f"  Warning: '{case_number}' not found in tile text — using snapshot index {case_idx}.")
+        target_tile = tiles.nth(case_idx)
+
     try:
-        tiles.nth(case_idx).wait_for(state="visible", timeout=8000)
+        target_tile.wait_for(state="visible", timeout=8000)
     except Exception:
-        print(f"{label} tile {case_idx} not visible after wait, skipping.")
+        print(f"  {label} tile for {case_number} not visible, skipping.")
         return
 
     print(f"\n=== {label} {case_idx + 1}: {case_number} ===")
-    tiles.nth(case_idx).click()
+    target_tile.click()
     page.wait_for_timeout(4000)  # Give the SPA time to load case detail content
 
-    # If the case has no expediente tiles (e.g. empty case, permission error),
-    # bail early and reset back to Level 1 so the loop can continue.
+    # Wait for VISIBLE expediente tiles — explicitly requiring state="visible"
+    # prevents a false-pass on hidden tiles that SUMAC's SPA may leave in the
+    # DOM from the previous case while the new case is still loading.
     try:
-        page.wait_for_selector(".caseEntryTile__simpleView", timeout=3000)
+        page.wait_for_selector(".caseEntryTile__simpleView", state="visible", timeout=5000)
     except Exception:
         print(f"  No expediente tiles found for {case_number}, skipping.")
         page.goto(landing_url)
         page.wait_for_timeout(3000)
         _wait_for_all_tiles(page)
         return
+
+    # Read the authoritative case number from the case detail heading.
+    # The heading title attribute has the format "{case_number} | {parties}".
+    # Using this as ground truth prevents wrong labels when SUMAC navigation
+    # lands on a different case than the one we clicked (linked tiles, etc.).
+    try:
+        heading_title = page.locator(".caseViewHeading__mainHeading").first.get_attribute("title", timeout=3000) or ""
+        page_case_number = heading_title.split(" | ")[0].strip()
+        if page_case_number and page_case_number != case_number:
+            print(f"  Page shows case {page_case_number} (expected {case_number}) — using page value.")
+            case_number = page_case_number
+    except Exception:
+        pass
 
     # Snapshot all expediente numbers NOW, before navigating into any of them.
     # Once we click into an expediente the tile list disappears from the DOM,
@@ -730,7 +860,8 @@ def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, c
 
     for i, exp_number in enumerate(exp_numbers[:12]):
         try:
-            _process_expediente(page, i, case_number, exp_number, exp_dates[i], captured_pdf_urls, captured_pdf_data)
+            _process_expediente(page, i, case_number, exp_number, exp_dates[i], captured_pdf_urls, captured_pdf_data,
+                                session_blob_srcs)
         except Exception as e:
             print(f"  Error on expediente {exp_number}: {e}")
             # Attempt to recover to case detail so remaining expedientes can
@@ -808,6 +939,10 @@ def scrape_all_pdfs(page):
 
     captured_pdf_urls = []
     captured_pdf_data = {}  # url → bytes captured at response time
+    # Accumulates every blob: URL seen across ALL cases and expedientes this run.
+    # Prevents the SPA's in-memory blobs from a previous case bleeding into a
+    # later case's downloads when session_blob_srcs is passed to _process_expediente.
+    session_blob_srcs: set = set()
 
     def on_response(response):
         """Intercept every HTTP response and record URLs that look like PDFs.
@@ -849,6 +984,7 @@ def scrape_all_pdfs(page):
                 captured_pdf_urls, captured_pdf_data,
                 tile_selector=_TOP_TILE_SEL,
                 label="Notification",
+                session_blob_srcs=session_blob_srcs,
             )
             processed_cases.add(case_number)
         except Exception as e:
@@ -870,6 +1006,7 @@ def scrape_all_pdfs(page):
                 captured_pdf_urls, captured_pdf_data,
                 tile_selector=_BOTTOM_TILE_SEL,
                 label="Case",
+                session_blob_srcs=session_blob_srcs,
             )
             processed_cases.add(case_number)
         except Exception as e:
@@ -910,9 +1047,28 @@ def run():
     username, password = read_credentials()
     current_url = ""
 
+    # When frozen by PyInstaller, find chrome.exe next to the exe so we
+    # never rely on Playwright's internal browser discovery (which points
+    # to the temp extraction folder and ignores PLAYWRIGHT_BROWSERS_PATH).
+    _chrome_exe = None
+    if getattr(sys, 'frozen', False):
+        _ms_playwright = Path(sys.executable).parent / "ms-playwright"
+        for _d in sorted(_ms_playwright.glob("chromium-*"), reverse=True):
+            _c = _d / "chrome-win64" / "chrome.exe"
+            if _c.exists():
+                _chrome_exe = str(_c)
+                break
+        if _chrome_exe:
+            print(f"Using Chromium: {_chrome_exe}")
+        else:
+            print("⚠️  chrome.exe not found next to exe — using Playwright default")
+
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False)
+            browser = p.chromium.launch(
+                headless=False,
+                executable_path=_chrome_exe,  # None = auto-detect (non-frozen)
+            )
             _active_browser = browser
             page = browser.new_page()
             page.goto(SUMAC_URL)
