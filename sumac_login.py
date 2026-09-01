@@ -76,6 +76,18 @@ def read_credentials():
     return lines[0], lines[1]
 
 
+def _truncate_filename(fname, max_length=100):
+    """
+    Cap a filename at `max_length` characters, preserving its extension.
+    If truncation is needed, "..." is inserted before the extension.
+    """
+    if len(fname) <= max_length:
+        return fname
+    stem, ext = os.path.splitext(fname)
+    keep = max_length - len(ext) - 3  # room for "..." + extension
+    return f"{stem[:keep]}...{ext}"
+
+
 def _cookie_header(page):
     """
     Build a Cookie header string from the current browser session.
@@ -86,13 +98,15 @@ def _cookie_header(page):
     return "; ".join(f"{c['name']}={c['value']}" for c in cookies)
 
 
-def _save_pdf_from_url(page, url, save_path, pdf_data_cache=None):
+def _save_pdf_from_url(page, url, save_path, pdf_data_cache=None, timeout=30):
     """
     Save a PDF to `save_path`.  Returns True on success.
 
     Checks `pdf_data_cache` first — bytes captured at response time require no
     second network request and work even for one-time-token URLs.  Falls back to
     a blob: in-browser read, then urllib for plain HTTP URLs.
+
+    `timeout` (seconds) bounds only the last-resort urllib request.
     """
     import base64
 
@@ -128,7 +142,7 @@ def _save_pdf_from_url(page, url, save_path, pdf_data_cache=None):
     # Last resort: urllib re-download (slow; may fail for one-time-token URLs).
     try:
         req = urllib.request.Request(url, headers={"Cookie": _cookie_header(page)})
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             if resp.status == 200:
                 with open(save_path, "wb") as f:
                     f.write(resp.read())
@@ -138,12 +152,30 @@ def _save_pdf_from_url(page, url, save_path, pdf_data_cache=None):
     return False
 
 
+def _remaining_ms(deadline, default_ms):
+    """Milliseconds left before `deadline` (clamped to a 300 ms floor), or
+    `default_ms` if there is no deadline (Notificación/Anejo — unaffected)."""
+    if deadline is None:
+        return default_ms
+    return max(300, int((deadline - time.time()) * 1000))
+
+
+def _remaining_s(deadline, default_s):
+    """Seconds left before `deadline` (clamped to a 1 s floor), or `default_s`
+    if there is no deadline (Notificación/Anejo — unaffected)."""
+    if deadline is None:
+        return default_s
+    return max(1, deadline - time.time())
+
+
 def _already_downloaded(prefix):
-    """Return True if sumac_documents already contains a file whose name starts with prefix."""
+    """Return True if sumac_documents already contains a file whose name starts with
+    prefix, comparing only the first 80 characters."""
     dest = Path("sumac_documents")
     if not dest.exists():
         return False
-    return any(f.name.startswith(prefix) for f in dest.iterdir() if f.is_file())
+    prefix = prefix[:80]
+    return any(f.name[:80].startswith(prefix) for f in dest.iterdir() if f.is_file())
 
 
 
@@ -206,6 +238,12 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
     # Omit the tab name from Documento filenames — the doc title already identifies it.
     tab_label = "" if tab_name == "Documento" else tab_name
 
+    # Documento gets a hard 5 s wall-clock budget covering every strategy below
+    # (including the left-pillbox path and any urllib fallback download): once it
+    # expires we give up and move on, no matter which strategy is mid-flight.
+    # None for Notificación, so every budget check further down is a no-op there.
+    documento_deadline = (time.time() + 5.0) if not tab_label else None
+
     # Skip if already saved in a prior run.
     # Notificación filenames start with "{prefix}_Notificación", so a simple
     # prefix check works.  Documento filenames have no extra segment after the
@@ -243,18 +281,18 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
                     ".caseEntryDocumentContainer__leftPillbox"
                     " .caseEntryDocumentContainer__documentHeader h1"
                 ).first
-                left_title = (h1.get_attribute("title") or h1.inner_text(timeout=1000) or "").strip()
+                left_title = (h1.get_attribute("title", timeout=_remaining_ms(documento_deadline, 1000)) or h1.inner_text(timeout=_remaining_ms(documento_deadline, 1000)) or "").strip()
                 left_title = re.sub(r'[\\/:*?"<>|.]+', '', left_title).strip()
                 left_title = re.sub(r'\s+', ' ', left_title)[:50]
             except Exception:
                 left_title = ""
             title_part = f" - {left_title}" if left_title else ""
             try:
-                with page.expect_download(timeout=5000) as dl_info:
-                    left_dl_btn.click()
+                with page.expect_download(timeout=_remaining_ms(documento_deadline, 5000)) as dl_info:
+                    left_dl_btn.click(timeout=_remaining_ms(documento_deadline, 30000))
                 dl = dl_info.value
                 fname = f"{filename_prefix}{title_part}.pdf"
-                save_path = os.path.join("sumac_documents", fname)
+                save_path = os.path.join("sumac_documents", _truncate_filename(fname))
                 dl.save_as(save_path)
                 print(f"    [Documento] Saved from left pillbox: {save_path}")
                 return True
@@ -273,11 +311,11 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
                 )
                 left_url = None
                 if left_iframe_loc.count() > 0 and left_iframe_loc.first.is_visible():
-                    left_url = left_iframe_loc.first.get_attribute("src", timeout=2000)
+                    left_url = left_iframe_loc.first.get_attribute("src", timeout=_remaining_ms(documento_deadline, 2000))
                 if left_url and (stale_blob_srcs is None or left_url not in stale_blob_srcs):
                     fname = f"{filename_prefix}{title_part}.pdf"
-                    save_path = os.path.join("sumac_documents", fname)
-                    if _save_pdf_from_url(page, left_url, save_path, captured_pdf_data):
+                    save_path = os.path.join("sumac_documents", _truncate_filename(fname))
+                    if _save_pdf_from_url(page, left_url, save_path, captured_pdf_data, timeout=_remaining_s(documento_deadline, 30)):
                         print(f"    [Documento] Saved from left pillbox iframe: {save_path}")
                         return True
             except Exception:
@@ -296,7 +334,17 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
     # re-click (no new network request), the pre-click URL is the only handle we
     # have for Strategy 3.
     urls_before_click = list(captured_pdf_urls)
-    tab.first.click()
+    if documento_deadline:
+        # Documento: cap the click's own actionability wait to the remaining
+        # budget — Playwright's default 30 s wait here would otherwise bypass
+        # every deadline check below if the tab isn't immediately clickable.
+        try:
+            tab.first.click(timeout=_remaining_ms(documento_deadline, 30000))
+        except Exception as e:
+            print(f"    [Documento] Tab click failed/timed out: {e}")
+            return False
+    else:
+        tab.first.click()
 
     # Two-phase poll after the tab click:
     #   Phase 1 (0–2 s): watch for a new PDF URL to appear in captured_pdf_urls.
@@ -310,6 +358,9 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
     # notification tab is detected as soon as SUMAC renders it — regardless of
     # how long the SPA takes — without burning through all 15 seconds.
     for i in range(75):  # 75 × 200 ms = 15 s ceiling
+        if documento_deadline and time.time() > documento_deadline:
+            print(f"    [Documento] 5 s time budget exceeded — moving on.")
+            return False
         page.wait_for_timeout(200)
         if tab_label:
             try:
@@ -352,7 +403,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
             ).first
         else:
             h1 = page.locator(".caseEntryDocumentContainer__documentHeader h1").first
-        doc_title = (h1.get_attribute("title") or h1.inner_text(timeout=1000) or "").strip()
+        doc_title = (h1.get_attribute("title", timeout=_remaining_ms(documento_deadline, 30000)) or h1.inner_text(timeout=_remaining_ms(documento_deadline, 1000)) or "").strip()
         # Sanitize: remove characters illegal in filenames, collapse whitespace.
         doc_title = re.sub(r'[\\/:*?"<>|.]+', '', doc_title).strip()
         doc_title = re.sub(r'\s+', ' ', doc_title)[:50]
@@ -366,6 +417,9 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
     # jump straight to Strategy 3 — no point trying download buttons that would
     # each burn a 1 s timeout on a PDF that already arrived via the network.
     new_urls_after_wait = [u for u in captured_pdf_urls if u not in urls_before_click]
+    if documento_deadline and time.time() > documento_deadline:
+        print(f"    [Documento] 5 s time budget exceeded — moving on.")
+        return False
     if not new_urls_after_wait:
         # ── Strategy 0c: read PDF viewer iframe src directly ──────────────────
         # When SUMAC serves the PDF from browser cache (no new network request
@@ -391,11 +445,11 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
             tab_iframe_loc = page.locator(iframe_sel).first
             tab_iframe_url = None
             if tab_iframe_loc.count() > 0 and tab_iframe_loc.is_visible():
-                tab_iframe_url = tab_iframe_loc.get_attribute("src", timeout=2000)
+                tab_iframe_url = tab_iframe_loc.get_attribute("src", timeout=_remaining_ms(documento_deadline, 2000))
             if tab_iframe_url and (stale_blob_srcs is None or tab_iframe_url not in stale_blob_srcs):
                 fname = f"{filename_prefix}_{tab_label}{title_part}.pdf" if tab_label else f"{filename_prefix}{title_part}.pdf"
-                save_path = os.path.join("sumac_documents", fname)
-                if _save_pdf_from_url(page, tab_iframe_url, save_path, captured_pdf_data):
+                save_path = os.path.join("sumac_documents", _truncate_filename(fname))
+                if _save_pdf_from_url(page, tab_iframe_url, save_path, captured_pdf_data, timeout=_remaining_s(documento_deadline, 30)):
                     print(f"    [{tab_name}] Saved from iframe src: {save_path}")
                     return True
         except Exception:
@@ -411,13 +465,16 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
             dl_btn = page.locator(".caseEntriesView__downloadButton")
         if dl_btn.count() > 0:
             for j in range(dl_btn.count()):
+                if documento_deadline and time.time() > documento_deadline:
+                    print(f"    [Documento] 5 s time budget exceeded — moving on.")
+                    return False
                 try:
                     print(f"    [{tab_name}] Clicking download button {j+1}...")
                     with page.expect_download(timeout=1000) as dl_info:
-                        dl_btn.nth(j).click()
+                        dl_btn.nth(j).click(timeout=_remaining_ms(documento_deadline, 30000))
                     dl = dl_info.value
                     fname = f"{filename_prefix}_{tab_label}{title_part}.pdf" if tab_label else f"{filename_prefix}{title_part}.pdf"
-                    save_path = os.path.join("sumac_documents", fname)
+                    save_path = os.path.join("sumac_documents", _truncate_filename(fname))
                     dl.save_as(save_path)
                     print(f"    Saved: {save_path}")
                     return True
@@ -431,14 +488,17 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
             elems = page.locator(selector)
             if elems.count() > 0:
                 for j in range(elems.count()):
+                    if documento_deadline and time.time() > documento_deadline:
+                        print(f"    [Documento] 5 s time budget exceeded — moving on.")
+                        return False
                     try:
                         if not elems.nth(j).is_visible():
                             continue
                         with page.expect_download(timeout=1000) as dl_info:
-                            elems.nth(j).click()
+                            elems.nth(j).click(timeout=_remaining_ms(documento_deadline, 30000))
                         dl = dl_info.value
                         fname = f"{filename_prefix}_{tab_label}{title_part}.pdf" if tab_label else f"{filename_prefix}{title_part}.pdf"
-                        save_path = os.path.join("sumac_documents", fname)
+                        save_path = os.path.join("sumac_documents", _truncate_filename(fname))
                         dl.save_as(save_path)
                         print(f"    Saved: {save_path}")
                         return True
@@ -470,10 +530,13 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
         # — such as a Notificación PDF prefetched by SUMAC — are excluded.
         urls_to_try = new_urls if new_urls else list(reversed(urls_before_click))
     for j, url in enumerate(urls_to_try):
+        if documento_deadline and time.time() > documento_deadline:
+            print(f"    [Documento] 5 s time budget exceeded — moving on.")
+            return False
         fname = f"{filename_prefix}_{tab_label}{title_part}.pdf" if tab_label else f"{filename_prefix}{title_part}.pdf"
-        save_path = os.path.join("sumac_documents", fname)
+        save_path = os.path.join("sumac_documents", _truncate_filename(fname))
         print(f"    [{tab_name}] Saving intercepted PDF: {url}")
-        if _save_pdf_from_url(page, url, save_path, captured_pdf_data):
+        if _save_pdf_from_url(page, url, save_path, captured_pdf_data, timeout=_remaining_s(documento_deadline, 30)):
             captured_pdf_urls[:] = [u for u in captured_pdf_urls if u != url]
             captured_pdf_data.pop(url, None)
             print(f"    Saved: {save_path}")
@@ -515,13 +578,17 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_data, sessio
     # so any lazy-rendered pills outside the viewport are forced into the DOM.
     # The pills sit in attachmentsPillboxScrollArea (horizontal scroll).
     scroll_area = container.locator(".caseEntryDocumentContainer__attachmentsPillboxScrollArea")
-    try:
-        scroll_area.first.evaluate("el => { el.scrollLeft = el.scrollWidth; }")
-        page.wait_for_timeout(300)
-        scroll_area.first.evaluate("el => { el.scrollLeft = 0; }")
-        page.wait_for_timeout(200)
-    except Exception:
-        pass
+    if scroll_area.count() > 0:
+        # Only attempt this when the scroll area actually exists — otherwise
+        # .evaluate() auto-waits up to Playwright's 30 s default for it to
+        # appear before giving up, stalling every no-attachments expediente.
+        try:
+            scroll_area.first.evaluate("el => { el.scrollLeft = el.scrollWidth; }", timeout=1000)
+            page.wait_for_timeout(300)
+            scroll_area.first.evaluate("el => { el.scrollLeft = 0; }", timeout=1000)
+            page.wait_for_timeout(200)
+        except Exception:
+            pass
 
     # Each attachment is rendered as a .caseEntryDocumentContainer__attachmentTile.
     pills = container.locator(".caseEntryDocumentContainer__attachmentTile")
@@ -589,7 +656,7 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_data, sessio
                 # SUMAC sometimes omits the extension or sends a non-pdf suffix.
                 base = Path(dl.suggested_filename).stem if dl.suggested_filename else "attachment"
                 fname = f"{filename_prefix}_anejo_{j + 1}{label_part}_{base}.pdf"
-                save_path = os.path.join("sumac_documents", fname)
+                save_path = os.path.join("sumac_documents", _truncate_filename(fname))
                 dl.save_as(save_path)
                 print(f"    [Anejo] Saved: {save_path}")
                 page.wait_for_timeout(2000)
@@ -618,7 +685,7 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_data, sessio
 
         if anejo_url and (session_blob_srcs is None or anejo_url not in session_blob_srcs):
             fname = f"{filename_prefix}_anejo_{j + 1}{label_part}.pdf"
-            save_path = os.path.join("sumac_documents", fname)
+            save_path = os.path.join("sumac_documents", _truncate_filename(fname))
             print(f"    [Anejo] Saving from right pillbox iframe: {anejo_url}")
             if _save_pdf_from_url(page, anejo_url, save_path, captured_pdf_data):
                 captured_pdf_data.pop(anejo_url, None)
@@ -660,7 +727,8 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
         print(f"  Expediente tile {exp_idx} no longer in DOM, skipping.")
         return
 
-    print(f"  Expediente {exp_idx + 1}: #{exp_number}")
+    t_exp_start = time.time()
+    print(f"  Expediente {exp_idx + 1}: #{exp_number}  @ {time.strftime('%H:%M:%S')}")
     # Accumulate every blob: URL currently in the DOM into the session-wide
     # stale set before navigating into this expediente.  SUMAC's SPA keeps old
     # blob objects alive in browser memory across SPA navigation — even across
@@ -689,6 +757,7 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
         )
     except Exception:
         page.wait_for_timeout(1000)
+    print(f"    [timing] expediente rendered at +{time.time() - t_exp_start:.1f}s")
 
     # Confirm the case number from the page heading before building the prefix.
     # The same .caseViewHeading__mainHeading heading shown on the case list is
@@ -716,9 +785,11 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     #    tab click automatically.
     _download_from_tab(page, "Documento", filename_prefix, captured_pdf_urls, captured_pdf_data,
                        session_blob_srcs)
+    print(f"    [timing] Documento done at +{time.time() - t_exp_start:.1f}s")
 
     # 2. Anejos — the pillbox is still visible because no tab was clicked above.
     _download_anejo_attachments(page, filename_prefix, captured_pdf_data, session_blob_srcs)
+    print(f"    [timing] Anejo done at +{time.time() - t_exp_start:.1f}s")
 
     # 3. Notificación last — clicking its tab changes the view (pillbox gone),
     #    but anejos are already finished by this point.
@@ -744,6 +815,7 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     captured_pdf_data.clear()
     _download_from_tab(page, "Notificación", filename_prefix, captured_pdf_urls, captured_pdf_data,
                        session_blob_srcs)
+    print(f"    [timing] Notificación done at +{time.time() - t_exp_start:.1f}s")
 
     # Return to case detail (Level 2) using browser history.
     # wait_for_selector ensures the expediente list is ready before the caller
@@ -752,6 +824,7 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     # state="visible" — hidden residual tiles from the expediente view must not
     # satisfy this check; we need the case-detail tile list to be genuinely visible.
     page.wait_for_selector(".caseEntryTile__simpleView", state="visible", timeout=5000)
+    print(f"    [timing] expediente {exp_idx + 1} total: {time.time() - t_exp_start:.1f}s")
 
 
 def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, captured_pdf_data,
@@ -858,7 +931,7 @@ def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, c
 
     print(f"  Found {exp_count} expedientes: {exp_numbers}")
 
-    for i, exp_number in enumerate(exp_numbers[:8]):
+    for i, exp_number in enumerate(exp_numbers[:5]):
         try:
             _process_expediente(page, i, case_number, exp_number, exp_dates[i], captured_pdf_urls, captured_pdf_data,
                                 session_blob_srcs)

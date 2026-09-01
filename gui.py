@@ -62,6 +62,7 @@ class SumacBotGUI(ctk.CTk):
         self.resizable(False, False)
 
         self._bot_running = False
+        self._stop_requested = False
 
         self.tabview = ctk.CTkTabview(self, width=620)
         self.tabview.pack(fill="both", expand=True, padx=10, pady=10)
@@ -244,7 +245,10 @@ class SumacBotGUI(ctk.CTk):
     # ── Bot tab handlers ──────────────────────────────────────────────────────
 
     def _start(self):
+        if self._bot_running:
+            return
         self._bot_running = True
+        self._stop_requested = False
         self.start_btn.configure(
             text="⏳   Running…",
             fg_color="#CA6F1E", hover_color="#CA6F1E",
@@ -259,9 +263,16 @@ class SumacBotGUI(ctk.CTk):
 
     def _stop(self):
         self._log("\n[Stopping…]\n")
+        self._stop_requested = True
+        self.stop_btn.configure(state="disabled")
         import sumac_login
         sumac_login.stop()
-        self._set_idle("Stopped")
+        # Do NOT reset to idle here — the background thread from _run_bot is
+        # still winding down (its current Playwright call needs to raise once
+        # the browser closes). Re-enabling Start now would let a second run()
+        # start while the first is still writing PDFs, causing duplicate
+        # downloads. _on_done() (called when the thread actually exits) is the
+        # only place that re-enables Start.
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -282,8 +293,9 @@ class SumacBotGUI(ctk.CTk):
         self.after(0, self._on_done)
 
     def _on_done(self):
-        self._log("\n[Finished]\n")
-        self._set_idle("Finished")
+        status_text = "Stopped" if self._stop_requested else "Finished"
+        self._log(f"\n[{status_text}]\n")
+        self._set_idle(status_text)
 
     def _set_idle(self, status_text: str):
         self._bot_running = False
