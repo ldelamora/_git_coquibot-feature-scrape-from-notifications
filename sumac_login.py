@@ -178,6 +178,25 @@ def _already_downloaded(prefix):
     return any(f.name[:80].startswith(prefix) for f in dest.iterdir() if f.is_file())
 
 
+def _cleanup_old_pdfs(months=6):
+    """Delete PDFs in sumac_documents whose file save time is older than `months`
+    months ago (average 30.44-day month), keeping the folder from growing unbounded."""
+    dest = Path("sumac_documents")
+    if not dest.exists():
+        return
+    cutoff = time.time() - months * 30.44 * 24 * 60 * 60
+    deleted = 0
+    for f in dest.iterdir():
+        if f.is_file() and f.suffix.lower() == ".pdf":
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+                    deleted += 1
+            except Exception as e:
+                print(f"    [cleanup] Failed to delete {f.name}: {e}")
+    print(f"[cleanup] Deleted {deleted} PDF(s) saved more than {months} months ago.")
+
+
 
 MESES = {
     "enero": "01", "febrero": "02", "marzo": "03", "abril": "04",
@@ -1089,6 +1108,8 @@ def scrape_all_pdfs(page):
 
     page.remove_listener("response", on_response)
     print("\nAll panels processed.")
+
+    _cleanup_old_pdfs()
 
 
 # Holds the active browser instance so stop() can close it from outside.
