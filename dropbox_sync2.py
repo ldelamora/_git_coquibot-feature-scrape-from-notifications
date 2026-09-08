@@ -347,6 +347,87 @@ def copy_files_to_dropbox_subfolders(source_folder=None, destination_folder=None
         _send_case_emails(new_files)
 
 
+def move_files_from_UNKNOWN_to_dropbox_subfolders(destination_folder=None):
+    """
+    Move files out of Coquibot/UNKNOWN/SUMAC/ into the correct Dropbox case
+    folder, now that a matching folder may have been created since a file was
+    first routed there as unmatched.
+
+    Each file is moved to <case_folder>/SUMAC/ where <case_folder> is the
+    Dropbox subfolder whose name contains the file's SUMAC case code,
+    overwriting any file already there. Files with no matching case folder
+    are left in UNKNOWN/SUMAC/ untouched.
+    """
+    if destination_folder is None:
+        destination_folder = _read_dropbox_dest()
+    destination_folder = Path(destination_folder)
+
+    unknown_folder = destination_folder / "UNKNOWN" / "SUMAC"
+    if not unknown_folder.exists():
+        print(f"No UNKNOWN/SUMAC folder found at '{unknown_folder}' — nothing to move.")
+        return
+
+    try:
+        unknown_files = [f for f in unknown_folder.iterdir() if f.is_file()]
+    except PermissionError:
+        print(f"Error: Permission denied when accessing '{unknown_folder}'.")
+        return
+
+    if not unknown_files:
+        print("No files found in UNKNOWN/SUMAC — nothing to move.")
+        return
+
+    print(f"Scanning UNKNOWN/SUMAC ({len(unknown_files)} file(s)) for matching case folders...")
+    print("-" * 60)
+
+    moved_count = 0
+    left_count = 0
+    no_code_count = 0
+
+    for source_file in unknown_files:
+        filename = source_file.name
+
+        case_code = get_case_code(filename)
+        if case_code is None:
+            print(f"⚠️  Left in UNKNOWN (no case code in filename): {filename}")
+            no_code_count += 1
+            continue
+
+        case_folder = find_case_folder(destination_folder, case_code)
+        if case_folder is None or case_folder.name == "UNKNOWN":
+            print(f"❓ Still no folder found for {case_code} — leaving in UNKNOWN/: {filename}")
+            left_count += 1
+            continue
+
+        sumac_folder = case_folder / "SUMAC"
+        try:
+            sumac_folder.mkdir(parents=True, exist_ok=True)
+        except (PermissionError, OSError) as e:
+            print(f"❌ Error creating SUMAC folder in {case_folder}: {e}")
+            left_count += 1
+            continue
+
+        destination_file = sumac_folder / filename
+        try:
+            if destination_file.exists():
+                destination_file.unlink()  # overwrite
+            shutil.move(str(source_file), str(destination_file))
+            print(f"➡️  Moved: {filename}")
+            print(f"       → {case_folder.name}/SUMAC/")
+            moved_count += 1
+        except (shutil.Error, PermissionError, OSError) as e:
+            print(f"❌ Error moving {filename}: {e}")
+            left_count += 1
+
+    print("\n" + "=" * 60)
+    print("SUMMARY:")
+    print(f"  Files moved:                       {moved_count}")
+    print(f"  Files left in UNKNOWN (no match):  {left_count}")
+    print(f"  Files left (no case code):         {no_code_count}")
+    print(f"  Total files processed:             {moved_count + left_count + no_code_count}")
+    print("=" * 60)
+
+
 def preview_organization(source_folder=None, destination_folder=None):
     """
     Preview where files would be copied without actually copying them.

@@ -950,7 +950,7 @@ def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, c
 
     print(f"  Found {exp_count} expedientes: {exp_numbers}")
 
-    for i, exp_number in enumerate(exp_numbers[:5]):
+    for i, exp_number in enumerate(exp_numbers[:4]):
         try:
             _process_expediente(page, i, case_number, exp_number, exp_dates[i], captured_pdf_urls, captured_pdf_data,
                                 session_blob_srcs)
@@ -1182,6 +1182,10 @@ def run():
 
             current_url = page.url
             print(f"Landing URL after login: {current_url}")
+
+            print("\nReconciling UNKNOWN Dropbox files before downloading...")
+            import dropbox_sync2
+            dropbox_sync2.move_files_from_UNKNOWN_to_dropbox_subfolders()
 
             try:
                 scrape_all_pdfs(page)
