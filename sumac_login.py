@@ -222,81 +222,6 @@ def _wait_for_all_tiles(page, timeout=5000):
 
 
 
-def _download_documento_pillbox(page, filename_prefix, captured_pdf_data, stale_blob_srcs=None, deadline=None):
-    """
-    Download a PDF via the .caseEntryDocumentContainer left-pillbox download
-    button/iframe — the layout used both by a regular expediente's Documento
-    tab (when anejos are active) and by a Tribunal Apelativo (TA) recourse
-    case's docket-entry detail view, which uses the identical container.
-
-    Returns:
-      True  — PDF saved.
-      False — the pillbox is present but has no downloadable PDF (a text-only
-              ORDEN/ENTERADO). Callers must NOT fall back to other strategies
-              here — doing so risks grabbing an unrelated document's bytes.
-      None  — the pillbox is absent entirely. Callers should try their own
-              fallback strategies (e.g. a tab click).
-    """
-    left_dl_btn = page.locator(
-        ".caseEntryDocumentContainer__leftPillbox"
-        " .caseEntryDocumentContainer__downloadButton"
-    )
-    if left_dl_btn.count() == 0:
-        return None
-
-    left_title = ""
-    try:
-        h1 = page.locator(
-            ".caseEntryDocumentContainer__leftPillbox"
-            " .caseEntryDocumentContainer__documentHeader h1"
-        ).first
-        left_title = (h1.get_attribute("title", timeout=_remaining_ms(deadline, 1000)) or h1.inner_text(timeout=_remaining_ms(deadline, 1000)) or "").strip()
-        left_title = re.sub(r'[\\/:*?"<>|.]+', '', left_title).strip()
-        left_title = re.sub(r'\s+', ' ', left_title)[:50]
-    except Exception:
-        left_title = ""
-    title_part = f" - {left_title}" if left_title else ""
-    try:
-        with page.expect_download(timeout=_remaining_ms(deadline, 5000)) as dl_info:
-            left_dl_btn.click(timeout=_remaining_ms(deadline, 30000))
-        dl = dl_info.value
-        fname = f"{filename_prefix}{title_part}.pdf"
-        save_path = os.path.join("sumac_documents", _truncate_filename(fname))
-        dl.save_as(save_path)
-        print(f"    [Documento] Saved from left pillbox: {save_path}")
-        return True
-    except Exception as e:
-        print(f"    [Documento] Left pillbox button failed: {e}")
-
-    # Strategy 0b: the button sometimes opens the PDF inline rather than
-    # triggering a browser download.  Read the blob URL directly from the
-    # left-pillbox iframe — same technique used for anejos' right pillbox.
-    # Guard: only use the blob URL if the iframe is VISIBLE (not hidden) and
-    # not in stale_blob_srcs (blobs from previous expedientes persist in
-    # browser memory and may still appear in hidden DOM nodes).
-    try:
-        left_iframe_loc = page.locator(
-            ".caseEntryDocumentContainer__leftPillbox iframe.PDFViewer__embedArea"
-        )
-        left_url = None
-        if left_iframe_loc.count() > 0 and left_iframe_loc.first.is_visible():
-            left_url = left_iframe_loc.first.get_attribute("src", timeout=_remaining_ms(deadline, 2000))
-        if left_url and (stale_blob_srcs is None or left_url not in stale_blob_srcs):
-            fname = f"{filename_prefix}{title_part}.pdf"
-            save_path = os.path.join("sumac_documents", _truncate_filename(fname))
-            if _save_pdf_from_url(page, left_url, save_path, captured_pdf_data, timeout=_remaining_s(deadline, 30)):
-                print(f"    [Documento] Saved from left pillbox iframe: {save_path}")
-                return True
-    except Exception:
-        pass
-
-    # Both 0a (button) and 0b (iframe src) failed while the left pillbox
-    # is present.  The entry has no downloadable PDF (e.g. a text-only
-    # ORDEN/ENTERADO).
-    print(f"    [Documento] Left pillbox present but no PDF found — skipping.")
-    return False
-
-
 def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captured_pdf_data,
                        stale_blob_srcs=None):
     """
@@ -362,21 +287,67 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
     # While anejos are active, the page has a two-column layout: Documento on the
     # left, the selected Anejo on the right.  The left-side download button is
     # unambiguously tied to the Documento PDF — no need to click the tab or guess
-    # which captured URL belongs to which document. Extracted into
-    # _download_documento_pillbox since Tribunal Apelativo docket entries use
-    # the identical container.
+    # which captured URL belongs to which document.
     if not tab_label:
-        result = _download_documento_pillbox(page, filename_prefix, captured_pdf_data,
-                                              stale_blob_srcs, documento_deadline)
-        if result is not None:
-            # True (saved) or False (pillbox present, no PDF) — either way, do
-            # NOT fall through to the tab-click fallback: falling through when
-            # the pillbox is present but empty would fire Strategy 3's
-            # stale-URL fallback and save the wrong bytes.
-            return result
-        # result is None — pillbox absent entirely — fall through below.
+        left_dl_btn = page.locator(
+            ".caseEntryDocumentContainer__leftPillbox"
+            " .caseEntryDocumentContainer__downloadButton"
+        )
+        if left_dl_btn.count() > 0:
+            left_title = ""
+            try:
+                h1 = page.locator(
+                    ".caseEntryDocumentContainer__leftPillbox"
+                    " .caseEntryDocumentContainer__documentHeader h1"
+                ).first
+                left_title = (h1.get_attribute("title", timeout=_remaining_ms(documento_deadline, 1000)) or h1.inner_text(timeout=_remaining_ms(documento_deadline, 1000)) or "").strip()
+                left_title = re.sub(r'[\\/:*?"<>|.]+', '', left_title).strip()
+                left_title = re.sub(r'\s+', ' ', left_title)[:50]
+            except Exception:
+                left_title = ""
+            title_part = f" - {left_title}" if left_title else ""
+            try:
+                with page.expect_download(timeout=_remaining_ms(documento_deadline, 5000)) as dl_info:
+                    left_dl_btn.click(timeout=_remaining_ms(documento_deadline, 30000))
+                dl = dl_info.value
+                fname = f"{filename_prefix}{title_part}.pdf"
+                save_path = os.path.join("sumac_documents", _truncate_filename(fname))
+                dl.save_as(save_path)
+                print(f"    [Documento] Saved from left pillbox: {save_path}")
+                return True
+            except Exception as e:
+                print(f"    [Documento] Left pillbox button failed: {e}")
 
-    # ── Tab-click fallback (Strategy 0 was absent or unavailable) ─────────────
+            # Strategy 0b: the button sometimes opens the PDF inline rather than
+            # triggering a browser download.  Read the blob URL directly from the
+            # left-pillbox iframe — same technique used for anejos' right pillbox.
+            # Guard: only use the blob URL if the iframe is VISIBLE (not hidden) and
+            # not in stale_blob_srcs (blobs from previous expedientes persist in
+            # browser memory and may still appear in hidden DOM nodes).
+            try:
+                left_iframe_loc = page.locator(
+                    ".caseEntryDocumentContainer__leftPillbox iframe.PDFViewer__embedArea"
+                )
+                left_url = None
+                if left_iframe_loc.count() > 0 and left_iframe_loc.first.is_visible():
+                    left_url = left_iframe_loc.first.get_attribute("src", timeout=_remaining_ms(documento_deadline, 2000))
+                if left_url and (stale_blob_srcs is None or left_url not in stale_blob_srcs):
+                    fname = f"{filename_prefix}{title_part}.pdf"
+                    save_path = os.path.join("sumac_documents", _truncate_filename(fname))
+                    if _save_pdf_from_url(page, left_url, save_path, captured_pdf_data, timeout=_remaining_s(documento_deadline, 30)):
+                        print(f"    [Documento] Saved from left pillbox iframe: {save_path}")
+                        return True
+            except Exception:
+                pass
+
+            # Both 0a (button) and 0b (iframe src) failed while the left pillbox
+            # is present.  The entry has no downloadable PDF (e.g. a text-only
+            # ORDEN/ENTERADO).  Return now — falling through to the tab-click
+            # would fire Strategy 3's stale-URL fallback and save the wrong bytes.
+            print(f"    [Documento] Left pillbox present but no PDF found — skipping.")
+            return False
+
+    # ── Tab-click fallback (Strategies 0a/0b were absent or failed) ─────────────
     # Snapshot captured URLs before clicking so we can identify what fires new.
     # We do NOT clear the list: if SUMAC serves the Documento from cache on
     # re-click (no new network request), the pre-click URL is the only handle we
@@ -745,7 +716,7 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_data, sessio
 
 
 def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captured_pdf_urls, captured_pdf_data,
-                        session_blob_srcs=None):
+                        session_blob_srcs=None, tile_selector=".caseEntryTile__simpleView"):
     """
     Level 3: download all PDFs from one expediente, then return to Level 2.
 
@@ -767,10 +738,15 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
                 must not be reused — this prevents cross-case contamination
                 because the SPA keeps old blob objects alive in browser memory
                 even after navigating to a different case.
+    tile_selector — CSS selector for the row being clicked. Defaults to the
+                regular expediente tile; Tribunal Apelativo (TA) recourse
+                cases pass ".recourseDocketEntryTile__view" instead, since the
+                resulting detail view (Documento/Anejo/Notificación) is
+                otherwise identical.
     """
     # Re-query tiles here because navigating back from a previous expediente
     # can trigger a DOM refresh, potentially invalidating stale locators.
-    tiles = page.locator(".caseEntryTile__simpleView")
+    tiles = page.locator(tile_selector)
     if exp_idx >= tiles.count():
         print(f"  Expediente tile {exp_idx} no longer in DOM, skipping.")
         return
@@ -812,8 +788,13 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     # also present here; its title attribute is "{case_number} | {parties}".
     # Reading it here ensures the filename uses what SUMAC is actually showing,
     # not whatever was passed in from the notification tile.
+    # .recourseHeader__mainHeading is the equivalent heading on a Tribunal
+    # Apelativo (TA) recourse case's docket-entry detail view — only one of
+    # the two selectors will ever match on a given page.
     try:
-        heading_title = page.locator(".caseViewHeading__mainHeading").first.get_attribute("title", timeout=3000) or ""
+        heading_title = page.locator(
+            ".caseViewHeading__mainHeading, .recourseHeader__mainHeading"
+        ).first.get_attribute("title", timeout=3000) or ""
         page_case_number = heading_title.split(" | ")[0].strip()
         if page_case_number and page_case_number != case_number:
             print(f"    Page shows case {page_case_number} (expected {case_number}) — using page value.")
@@ -871,136 +852,8 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     page.go_back()
     # state="visible" — hidden residual tiles from the expediente view must not
     # satisfy this check; we need the case-detail tile list to be genuinely visible.
-    page.wait_for_selector(".caseEntryTile__simpleView", state="visible", timeout=5000)
+    page.wait_for_selector(tile_selector, state="visible", timeout=5000)
     print(f"    [timing] expediente {exp_idx + 1} total: {time.time() - t_exp_start:.1f}s")
-
-
-def _process_recourse_docket_entry(page, docket_idx, case_number, docket_number, docket_date,
-                                   captured_pdf_data, session_blob_srcs=None):
-    """
-    Tribunal Apelativo (TA / recourse) case: download the PDF for one row of
-    the docket list (.recourseDocketEntryTile__view), then return to the list.
-
-    Clicking a docket entry opens a detail view using the identical
-    .caseEntryDocumentContainer layout as a regular expediente's Documento
-    tab, so _download_documento_pillbox is reused as-is.
-
-    docket_idx    — zero-based tile index in the current DOM (re-queried here
-                    because prior navigation may have refreshed the list).
-    docket_number — the docket entry's sequence number, embedded in saved filenames.
-    session_blob_srcs — same cross-entry stale-blob guard used by _process_expediente.
-    """
-    tiles = page.locator(".recourseDocketEntryTile__view")
-    if docket_idx >= tiles.count():
-        print(f"  Docket entry tile {docket_idx} no longer in DOM, skipping.")
-        return
-
-    t_entry_start = time.time()
-    print(f"  Docket entry {docket_idx + 1}: #{docket_number}  @ {time.strftime('%H:%M:%S')}")
-
-    if session_blob_srcs is None:
-        session_blob_srcs = set()
-    try:
-        for loc in page.locator("iframe.PDFViewer__embedArea").all():
-            s = loc.get_attribute("src", timeout=300)
-            if s and s.startswith("blob:"):
-                session_blob_srcs.add(s)
-    except Exception:
-        pass
-
-    tiles.nth(docket_idx).click()
-    try:
-        page.wait_for_selector(".caseEntryDocumentContainer", state="visible", timeout=5000)
-    except Exception:
-        page.wait_for_timeout(1000)
-    print(f"    [timing] docket entry rendered at +{time.time() - t_entry_start:.1f}s")
-
-    date_prefix = f"{docket_date}_" if docket_date else ""
-    filename_prefix = f"{date_prefix}[{docket_number}]_{case_number}"
-
-    # Skip if already saved in a prior run — same convention as Documento
-    # filenames (no extra tab-name segment after the prefix).
-    dest_dl = Path("sumac_documents")
-    already_dl = dest_dl.exists() and any(
-        f.name.startswith(filename_prefix)
-        and len(f.name) > len(filename_prefix)
-        and f.name[len(filename_prefix)] in ('.', ' ')
-        for f in dest_dl.iterdir() if f.is_file()
-    )
-    if already_dl:
-        print(f"    Already downloaded, skipping.")
-    else:
-        # Same 5 s budget as a regular Documento download.
-        result = _download_documento_pillbox(page, filename_prefix, captured_pdf_data,
-                                             session_blob_srcs, deadline=time.time() + 5.0)
-        if result is None:
-            print(f"    No document container found for this docket entry.")
-        elif result is False:
-            print(f"    No PDF found for this docket entry.")
-    print(f"    [timing] docket entry done at +{time.time() - t_entry_start:.1f}s")
-
-    page.go_back()
-    page.wait_for_selector(".recourseDocketEntryTile__view", state="visible", timeout=5000)
-    print(f"    [timing] docket entry {docket_idx + 1} total: {time.time() - t_entry_start:.1f}s")
-
-
-def _process_recourse_case(page, case_number, captured_pdf_data, session_blob_srcs=None):
-    """
-    Level 2 (Tribunal Apelativo variant): snapshot every row of a recourse
-    case's docket list (.recourseDocketEntryTile__view), then download each
-    one's PDF via _process_recourse_docket_entry.
-
-    Called in place of the regular expediente loop when a case's detail view
-    uses the recourse docket layout instead of .caseEntryTile__simpleView.
-    """
-    # Read the authoritative case number from the recourse-specific heading.
-    # Format: "{case_number} | {parties}", same convention as the regular
-    # .caseViewHeading__mainHeading but under a different class name.
-    try:
-        heading_title = page.locator(".recourseHeader__mainHeading").first.get_attribute("title", timeout=3000) or ""
-        page_case_number = heading_title.split(" | ")[0].strip()
-        if page_case_number and page_case_number != case_number:
-            print(f"    Page shows case {page_case_number} (expected {case_number}) — using page value.")
-            case_number = page_case_number
-    except Exception:
-        pass
-
-    # Snapshot all docket entry numbers/dates NOW, before navigating into any
-    # of them — same reasoning as the expediente snapshot: the list disappears
-    # from the DOM once we click into an entry.
-    docket_tiles = page.locator(".recourseDocketEntryTile__view")
-    docket_count = docket_tiles.count()
-    docket_numbers = []
-    docket_dates = []
-    for i in range(docket_count):
-        try:
-            num = docket_tiles.nth(i).locator(".recourseDocketEntryTile__docketNumber").inner_text(timeout=2000).strip()
-        except Exception:
-            num = str(i + 1)
-        docket_numbers.append(num)
-
-        try:
-            tile = docket_tiles.nth(i)
-            day   = tile.locator(".dateBlock__day").first.inner_text(timeout=1000).strip()
-            mon   = tile.locator(".dateBlock__month").first.inner_text(timeout=1000).strip().lower()
-            yr2   = tile.locator(".dateBlock__year").first.inner_text(timeout=1000).strip().lstrip("-")
-            month = MESES.get(mon, "")
-            docket_dates.append(f"20{yr2}-{month}-{day.zfill(2)}" if month and yr2 else "")
-        except Exception:
-            docket_dates.append("")
-
-    print(f"  Found {docket_count} docket entries: {docket_numbers}")
-
-    for i, docket_number in enumerate(docket_numbers):
-        try:
-            _process_recourse_docket_entry(page, i, case_number, docket_number, docket_dates[i],
-                                           captured_pdf_data, session_blob_srcs)
-        except Exception as e:
-            print(f"  Error on docket entry {docket_number}: {e}")
-            # Attempt to recover to the docket list so remaining entries can
-            # still be processed.
-            page.go_back()
-            page.wait_for_timeout(3000)
 
 
 def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, captured_pdf_data,
@@ -1068,7 +921,43 @@ def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, c
         # when the page in fact has content we just don't parse yet.
         if page.locator(".recourseDocketEntryTile__view").count() > 0:
             print(f"  {case_number} is a Tribunal Apelativo (recourse) case — processing docket entries.")
-            _process_recourse_case(page, case_number, captured_pdf_data, session_blob_srcs)
+            # Snapshot all docket entry numbers/dates NOW, before navigating into
+            # any of them — same reasoning as the expediente snapshot below.
+            docket_tiles = page.locator(".recourseDocketEntryTile__view")
+            docket_count = docket_tiles.count()
+            docket_numbers = []
+            docket_dates = []
+            for i in range(docket_count):
+                try:
+                    num = docket_tiles.nth(i).locator(".recourseDocketEntryTile__docketNumber").inner_text(timeout=2000).strip()
+                except Exception:
+                    num = str(i + 1)
+                docket_numbers.append(num)
+
+                try:
+                    tile = docket_tiles.nth(i)
+                    day   = tile.locator(".dateBlock__day").first.inner_text(timeout=1000).strip()
+                    mon   = tile.locator(".dateBlock__month").first.inner_text(timeout=1000).strip().lower()
+                    yr2   = tile.locator(".dateBlock__year").first.inner_text(timeout=1000).strip().lstrip("-")
+                    month = MESES.get(mon, "")
+                    docket_dates.append(f"20{yr2}-{month}-{day.zfill(2)}" if month and yr2 else "")
+                except Exception:
+                    docket_dates.append("")
+
+            print(f"  Found {docket_count} docket entries: {docket_numbers}")
+
+            for i, docket_number in enumerate(docket_numbers):
+                try:
+                    # Same _process_expediente used for regular expedientes —
+                    # the detail view (Documento/Anejo/Notificación) is identical,
+                    # only the row selector differs.
+                    _process_expediente(page, i, case_number, docket_number, docket_dates[i],
+                                        captured_pdf_urls, captured_pdf_data, session_blob_srcs,
+                                        tile_selector=".recourseDocketEntryTile__view")
+                except Exception as e:
+                    print(f"  Error on docket entry {docket_number}: {e}")
+                    page.go_back()
+                    page.wait_for_timeout(3000)
         else:
             print(f"  No expediente tiles found for {case_number}, skipping.")
         page.goto(landing_url)
