@@ -903,11 +903,17 @@ def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, c
     try:
         page.wait_for_selector(".caseEntryTile__simpleView", state="visible", timeout=5000)
     except Exception:
-        print(f"  No expediente tiles found for {case_number}, skipping.")
-        page.goto(landing_url)
-        page.wait_for_timeout(3000)
-        _wait_for_all_tiles(page)
-        return
+        # Some case types (e.g. Tribunal Apelativo "TA" cases) render a heavier
+        # page and can take longer than 5 s to show their expediente tiles.
+        # Give it one more chance before concluding there genuinely are none.
+        page.wait_for_timeout(5000)
+        if page.locator(".caseEntryTile__simpleView").count() == 0:
+            print(f"  No expediente tiles found for {case_number}, skipping.")
+            page.goto(landing_url)
+            page.wait_for_timeout(3000)
+            _wait_for_all_tiles(page)
+            return
+        print(f"  Expediente tiles for {case_number} took longer than usual to render — continuing.")
 
     # Read the authoritative case number from the case detail heading.
     # The heading title attribute has the format "{case_number} | {parties}".
