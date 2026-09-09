@@ -353,7 +353,25 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
     # re-click (no new network request), the pre-click URL is the only handle we
     # have for Strategy 3.
     urls_before_click = list(captured_pdf_urls)
-    if documento_deadline:
+
+    # Documento only: on some pages (e.g. Tribunal Apelativo docket entries,
+    # whose detail view has no left-pillbox — Strategy 0 above is skipped —
+    # but still uses Documento/Notificación tabs) "Documento" is ALREADY the
+    # active tab when the page opens, its PDF iframe already visible. Clicking
+    # an already-active tab in this SPA toggles it OFF instead of activating
+    # it — the same "click deselects" quirk already worked around for
+    # pre-selected anejo pills. Detect that case and skip the click so the
+    # already-loaded iframe isn't hidden right before Strategy 0c reads it.
+    already_showing = False
+    if not tab_label:
+        try:
+            already_showing = page.locator("iframe.PDFViewer__embedArea").first.is_visible()
+        except Exception:
+            already_showing = False
+
+    if already_showing:
+        print(f"    [Documento] Tab already active — skipping click.")
+    elif documento_deadline:
         # Documento: cap the click's own actionability wait to the remaining
         # budget — Playwright's default 30 s wait here would otherwise bypass
         # every deadline check below if the tab isn't immediately clickable.
