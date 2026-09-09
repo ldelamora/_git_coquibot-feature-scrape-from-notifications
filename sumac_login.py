@@ -408,8 +408,6 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
             except Exception:
                 pass
         new = [u for u in captured_pdf_urls if u not in urls_before_click]
-        if not tab_label and new:
-            print(f"    [Documento][debug] i={i} new={new} in_data={[u in captured_pdf_data for u in new]}")
         if new and any(u in captured_pdf_data for u in new):
             break  # URL + bytes cached — ready to save
         if new and any(u.startswith("blob:") for u in new):
@@ -417,15 +415,11 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
             # doesn't return real bytes for them the way it does for HTTP PDF
             # responses — so waiting on that cache would just burn the whole
             # budget. Strategy 0c reads the iframe's blob src directly instead.
-            if not tab_label:
-                print(f"    [Documento][debug] breaking early on blob URL")
             break
         if not new and i >= 9:
             break  # no new URL after 2 s — fall through to Strategy 1/2/3
         if new and i >= 60:
             break  # URL found but body never cached after 12 s — try anyway
-    if not tab_label:
-        print(f"    [Documento][debug] poll loop exited at i={i}, urls_before_click={urls_before_click}, captured_pdf_urls={captured_pdf_urls}")
 
     # Post-loop guard: the polling loop only runs for 2 s before breaking on
     # "no new URL".  If SUMAC rendered the empty state slowly, or if is_visible()
@@ -450,13 +444,20 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
             h1 = page.locator(
                 ".caseEntryNotificationsContainer__mainPillbox h1"
             ).first
+            doc_title = (h1.get_attribute("title", timeout=_remaining_ms(documento_deadline, 30000)) or h1.inner_text(timeout=_remaining_ms(documento_deadline, 1000)) or "").strip()
         else:
+            # Documento: this header doesn't exist on some page layouts (e.g.
+            # Tribunal Apelativo docket entries use .PDFViewer__view h1
+            # instead) — cap the wait at a small fixed ceiling. Tying it to
+            # the remaining budget here silently burned nearly the whole 5 s
+            # Documento budget waiting for a selector that would never match,
+            # leaving nothing for Strategy 0c/3 to actually run.
             h1 = page.locator(".caseEntryDocumentContainer__documentHeader h1").first
-        doc_title = (h1.get_attribute("title", timeout=_remaining_ms(documento_deadline, 30000)) or h1.inner_text(timeout=_remaining_ms(documento_deadline, 1000)) or "").strip()
+            title_timeout = min(500, _remaining_ms(documento_deadline, 500))
+            doc_title = (h1.get_attribute("title", timeout=title_timeout) or h1.inner_text(timeout=title_timeout) or "").strip()
         # Sanitize: remove characters illegal in filenames, collapse whitespace.
         doc_title = re.sub(r'[\\/:*?"<>|.]+', '', doc_title).strip()
         doc_title = re.sub(r'\s+', ' ', doc_title)[:50]
-     
     except Exception:
         doc_title = ""
 
@@ -466,8 +467,6 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
     # jump straight to Strategy 3 — no point trying download buttons that would
     # each burn a 1 s timeout on a PDF that already arrived via the network.
     new_urls_after_wait = [u for u in captured_pdf_urls if u not in urls_before_click]
-    if not tab_label:
-        print(f"    [Documento][debug] new_urls_after_wait={new_urls_after_wait}")
     if documento_deadline and time.time() > documento_deadline:
         print(f"    [Documento] 5 s time budget exceeded — moving on.")
         return False
@@ -495,25 +494,16 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
                 iframe_sel = "iframe.PDFViewer__embedArea"
             tab_iframe_loc = page.locator(iframe_sel).first
             tab_iframe_url = None
-            iframe_count = tab_iframe_loc.count()
-            iframe_visible = tab_iframe_loc.is_visible() if iframe_count > 0 else False
-            if not tab_label:
-                print(f"    [Documento][debug] Strategy 0c: iframe_count={iframe_count} iframe_visible={iframe_visible}")
-            if iframe_count > 0 and iframe_visible:
+            if tab_iframe_loc.count() > 0 and tab_iframe_loc.is_visible():
                 tab_iframe_url = tab_iframe_loc.get_attribute("src", timeout=_remaining_ms(documento_deadline, 2000))
-            if not tab_label:
-                print(f"    [Documento][debug] Strategy 0c: tab_iframe_url={tab_iframe_url} stale={stale_blob_srcs is not None and tab_iframe_url in stale_blob_srcs if tab_iframe_url else 'n/a'}")
             if tab_iframe_url and (stale_blob_srcs is None or tab_iframe_url not in stale_blob_srcs):
                 fname = f"{filename_prefix}_{tab_label}{title_part}.pdf" if tab_label else f"{filename_prefix}{title_part}.pdf"
                 save_path = os.path.join("sumac_documents", _truncate_filename(fname))
                 if _save_pdf_from_url(page, tab_iframe_url, save_path, captured_pdf_data, timeout=_remaining_s(documento_deadline, 30)):
                     print(f"    [{tab_name}] Saved from iframe src: {save_path}")
                     return True
-                elif not tab_label:
-                    print(f"    [Documento][debug] Strategy 0c: _save_pdf_from_url returned False")
-        except Exception as e:
-            if not tab_label:
-                print(f"    [Documento][debug] Strategy 0c exception: {e}")
+        except Exception:
+            pass
 
         # ── Strategy 1: dedicated download button ─────────────────────────────
         # Use a tab-specific selector so we never accidentally click a hidden
