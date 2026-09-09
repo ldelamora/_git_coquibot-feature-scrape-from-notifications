@@ -410,6 +410,12 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
         new = [u for u in captured_pdf_urls if u not in urls_before_click]
         if new and any(u in captured_pdf_data for u in new):
             break  # URL + bytes cached — ready to save
+        if new and any(u.startswith("blob:") for u in new):
+            # blob: responses never populate captured_pdf_data — response.body()
+            # doesn't return real bytes for them the way it does for HTTP PDF
+            # responses — so waiting on that cache would just burn the whole
+            # budget. Strategy 0c reads the iframe's blob src directly instead.
+            break
         if not new and i >= 9:
             break  # no new URL after 2 s — fall through to Strategy 1/2/3
         if new and i >= 60:
