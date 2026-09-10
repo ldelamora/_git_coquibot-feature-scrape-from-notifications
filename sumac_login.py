@@ -463,6 +463,29 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
 
     title_part = f" - {doc_title}" if doc_title else ""
 
+    # ── Strategy 0d (recourse layout): Tribunal Apelativo docket entries use a
+    # two-column .recourseDocumentContainer__view where the Documento
+    # ("Principal") and the auto-selected Anejo BOTH load blob PDFs at once —
+    # so the network-captured URLs below are ambiguous and Strategy 3 would
+    # save the anejo under the Documento filename. Read the Documento straight
+    # from its own scoped iframe instead, before any of that.
+    if not tab_label:
+        rec_iframe = page.locator(
+            ".recourseDocumentContainer__documentsPillbox iframe.PDFViewer__embedArea"
+        ).first
+        if rec_iframe.count() > 0:
+            try:
+                rec_url = rec_iframe.get_attribute("src", timeout=_remaining_ms(documento_deadline, 2000))
+            except Exception:
+                rec_url = None
+            if rec_url and (stale_blob_srcs is None or rec_url not in stale_blob_srcs):
+                fname = f"{filename_prefix}{title_part}.pdf"
+                save_path = os.path.join("sumac_documents", _truncate_filename(fname))
+                if _save_pdf_from_url(page, rec_url, save_path, captured_pdf_data,
+                                      timeout=_remaining_s(documento_deadline, 30)):
+                    print(f"    [Documento] Saved from recourse documents pillbox: {save_path}")
+                    return True
+
     # If the network listener already captured a new URL during the poll above,
     # jump straight to Strategy 3 — no point trying download buttons that would
     # each burn a 1 s timeout on a PDF that already arrived via the network.
@@ -621,7 +644,9 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_data, sessio
     # BEM class confirmed from DOM inspection.
     container = page.locator("div.caseEntryDocumentContainer__attachmentsPillbox")
     if container.count() == 0:
-        # No Anejo section present on this expediente — nothing to do.
+        # Tribunal Apelativo docket entries use a different anejo list
+        # (.recourseFilingAttachmentTile__view tiles in a sidebar). Try that.
+        _download_recourse_anejos(page, filename_prefix, captured_pdf_data, session_blob_srcs)
         return
 
     # Scroll the inner scrollable area fully right then back to the start
@@ -741,6 +766,91 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_data, sessio
                 captured_pdf_data.pop(anejo_url, None)
                 print(f"    [Anejo] Saved: {save_path}")
                 page.wait_for_timeout(2000)
+                continue
+
+        print(f"    [Anejo] Could not save attachment {j + 1}.")
+
+
+def _download_recourse_anejos(page, filename_prefix, captured_pdf_data, session_blob_srcs=None):
+    """
+    Download the Anejo PDFs of a Tribunal Apelativo (TA) docket entry.
+
+    TA layout (.recourseDocumentContainer__view):
+      - Sidebar list of .recourseFilingAttachmentTile__view tiles; the first
+        one carries .recourseFilingAttachmentTile-selected and is already
+        previewed on load.
+      - The selected anejo's PDF renders in .recourseDocumentContainer__toolsPillbox
+        (the Documento itself is in .recourseDocumentContainer__documentsPillbox
+        and is handled separately by _download_from_tab).
+
+    Same first-to-last / skip-the-pre-selected-click approach as the regular
+    _download_anejo_attachments.
+    """
+    tiles = page.locator(
+        ".recourseDocumentContainer__sidePillboxes .recourseFilingAttachmentTile__view"
+    )
+    count = tiles.count()
+    if count == 0:
+        return
+    print(f"    [Anejo] Found {count} anejo(s) (recourse layout).")
+
+    for j in range(count):
+        _anejo_prefix = f"{filename_prefix}_anejo_{j + 1}"
+        _dest = Path("sumac_documents")
+        if _dest.exists() and any(
+            f.name.startswith(_anejo_prefix)
+            and not f.name[len(_anejo_prefix):len(_anejo_prefix) + 1].isdigit()
+            for f in _dest.iterdir() if f.is_file()
+        ):
+            print(f"    [Anejo] Attachment {j + 1} already downloaded, skipping.")
+            continue
+
+        try:
+            raw_label = tiles.nth(j).locator(
+                ".recourseFilingAttachmentTile__title"
+            ).first.inner_text(timeout=1000).strip()
+        except Exception:
+            raw_label = ""
+        label = re.sub(r'[\\/:*?"<>|]+', '', raw_label).strip()
+        label = re.sub(r'\s+', ' ', label)[:50]
+        label_part = f" - {label}" if label else ""
+
+        try:
+            is_selected = "recourseFilingAttachmentTile-selected" in (
+                tiles.nth(j).get_attribute("class", timeout=1000) or ""
+            )
+        except Exception:
+            is_selected = False
+
+        if not is_selected:
+            print(f"    [Anejo] Clicking anejo {j + 1}/{count}: '{label}'...")
+            try:
+                tiles.nth(j).click(timeout=3000)
+            except Exception as e:
+                print(f"    [Anejo] Click failed: {e}")
+                continue
+            page.wait_for_timeout(2500)
+        else:
+            print(f"    [Anejo] Anejo {j + 1}/{count}: '{label}' (pre-selected)")
+
+        try:
+            iframe_loc = page.locator(
+                ".recourseDocumentContainer__toolsPillbox iframe.PDFViewer__embedArea"
+            ).first
+            anejo_url = None
+            if iframe_loc.count() > 0 and iframe_loc.is_visible():
+                anejo_url = iframe_loc.get_attribute("src", timeout=3000)
+        except Exception:
+            anejo_url = None
+
+        if anejo_url and (session_blob_srcs is None or anejo_url not in session_blob_srcs):
+            fname = f"{_anejo_prefix}{label_part}.pdf"
+            save_path = os.path.join("sumac_documents", _truncate_filename(fname))
+            print(f"    [Anejo] Saving from tools pillbox iframe: {anejo_url}")
+            if _save_pdf_from_url(page, anejo_url, save_path, captured_pdf_data):
+                captured_pdf_data.pop(anejo_url, None)
+                print(f"    [Anejo] Saved: {save_path}")
+                page.wait_for_timeout(1500)
                 continue
 
         print(f"    [Anejo] Could not save attachment {j + 1}.")
