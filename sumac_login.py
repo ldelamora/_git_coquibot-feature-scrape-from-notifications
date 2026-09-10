@@ -776,9 +776,11 @@ def _download_recourse_anejos(page, filename_prefix, captured_pdf_data, session_
     Download the Anejo PDFs of a Tribunal Apelativo (TA) docket entry.
 
     TA layout (.recourseDocumentContainer__view):
-      - Sidebar list of .recourseFilingAttachmentTile__view tiles; the first
-        one carries .recourseFilingAttachmentTile-selected and is already
-        previewed on load.
+      - Sidebar "Anejos" list (.tileList__view) of .recourseFilingAttachmentTile__view
+        tiles; the first carries .recourseFilingAttachmentTile-selected and is
+        already previewed on load. A separate "Apéndice" list
+        (.documentCaseEntryBox__view) may or may not also be present in the
+        same sidebar — scoping to .tileList__view keeps the two apart.
       - The selected anejo's PDF renders in .recourseDocumentContainer__toolsPillbox
         (the Documento itself is in .recourseDocumentContainer__documentsPillbox
         and is handled separately by _download_from_tab).
@@ -787,7 +789,8 @@ def _download_recourse_anejos(page, filename_prefix, captured_pdf_data, session_
     _download_anejo_attachments.
     """
     tiles = page.locator(
-        ".recourseDocumentContainer__sidePillboxes .recourseFilingAttachmentTile__view"
+        ".recourseDocumentContainer__sidePillboxes .tileList__view"
+        " .recourseFilingAttachmentTile__view"
     )
     count = tiles.count()
     if count == 0:
