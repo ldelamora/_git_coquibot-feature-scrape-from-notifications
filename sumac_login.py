@@ -832,28 +832,40 @@ def _download_recourse_anejos(page, filename_prefix, captured_pdf_data, session_
             except Exception as e:
                 print(f"    [Anejo] Click failed: {e}")
                 continue
-            page.wait_for_timeout(2500)
         else:
             print(f"    [Anejo] Anejo {j + 1}/{count}: '{label}' (pre-selected)")
 
-        try:
-            iframe_loc = page.locator(
-                ".recourseDocumentContainer__toolsPillbox iframe.PDFViewer__embedArea"
-            ).first
-            anejo_url = None
-            if iframe_loc.count() > 0 and iframe_loc.is_visible():
-                anejo_url = iframe_loc.get_attribute("src", timeout=3000)
-        except Exception:
-            anejo_url = None
+        # Poll the tools-pillbox iframe for a fresh blob src. The pre-selected
+        # first anejo isn't clicked, so its preview may still be loading when
+        # we get here (especially when Documento short-circuited on
+        # "already downloaded"); the rest were just clicked. Either way, wait
+        # for a blob URL that isn't one we've already seen this session.
+        anejo_url = None
+        for _ in range(25):  # up to ~5 s
+            try:
+                iframe_loc = page.locator(
+                    ".recourseDocumentContainer__toolsPillbox iframe.PDFViewer__embedArea"
+                ).first
+                if iframe_loc.count() > 0 and iframe_loc.is_visible():
+                    src = iframe_loc.get_attribute("src", timeout=1000)
+                    if (src and src.startswith("blob:")
+                            and (session_blob_srcs is None or src not in session_blob_srcs)):
+                        anejo_url = src
+                        break
+            except Exception:
+                pass
+            page.wait_for_timeout(200)
 
-        if anejo_url and (session_blob_srcs is None or anejo_url not in session_blob_srcs):
+        if anejo_url:
             fname = f"{_anejo_prefix}{label_part}.pdf"
             save_path = os.path.join("sumac_documents", _truncate_filename(fname))
             print(f"    [Anejo] Saving from tools pillbox iframe: {anejo_url}")
             if _save_pdf_from_url(page, anejo_url, save_path, captured_pdf_data):
                 captured_pdf_data.pop(anejo_url, None)
+                # Remember it so a lagging iframe can't re-save it for the next anejo.
+                if session_blob_srcs is not None:
+                    session_blob_srcs.add(anejo_url)
                 print(f"    [Anejo] Saved: {save_path}")
-                page.wait_for_timeout(1500)
                 continue
 
         print(f"    [Anejo] Could not save attachment {j + 1}.")
