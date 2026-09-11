@@ -27,6 +27,7 @@ else:
 EMAIL_CONFIG    = SCRIPT_DIR / "email.txt"
 DROPBOX_CONFIG  = SCRIPT_DIR / "config.txt"
 SCHEDULE_CONFIG = SCRIPT_DIR / "schedule.txt"
+SCHEDULE_SLOTS  = 6  # number of auto-start time slots in the Scheduler tab
 
 # Default CTk blue — used to restore the Start button after a run.
 _CTK_BLUE       = ("#3B8ED0", "#1F6AA5")
@@ -339,7 +340,7 @@ class SumacBotGUI(ctk.CTk):
         self._schedule_entries  = []
         self._schedule_switches = []
 
-        for i in range(3):
+        for i in range(SCHEDULE_SLOTS):
             row = ctk.CTkFrame(tab, fg_color=("gray85", "gray20"), corner_radius=8)
             row.pack(fill="x", padx=40, pady=6)
 
@@ -377,7 +378,7 @@ class SumacBotGUI(ctk.CTk):
         if not SCHEDULE_CONFIG.exists():
             return
         lines = SCHEDULE_CONFIG.read_text(encoding="utf-8").strip().splitlines()
-        for i, line in enumerate(lines[:3]):
+        for i, line in enumerate(lines[:SCHEDULE_SLOTS]):
             parts = line.split(",")
             if len(parts) >= 2:
                 self._schedule_entries[i].delete(0, "end")
@@ -390,7 +391,7 @@ class SumacBotGUI(ctk.CTk):
 
     def _save_schedule(self) -> None:
         lines = []
-        for i in range(3):
+        for i in range(SCHEDULE_SLOTS):
             raw = self._schedule_entries[i].get().strip()
             try:
                 datetime.datetime.strptime(raw, "%H:%M")
@@ -406,7 +407,7 @@ class SumacBotGUI(ctk.CTk):
     def _refresh_scheduler_status(self) -> None:
         active = []
         if SCHEDULE_CONFIG.exists():
-            for line in SCHEDULE_CONFIG.read_text(encoding="utf-8").strip().splitlines()[:3]:
+            for line in SCHEDULE_CONFIG.read_text(encoding="utf-8").strip().splitlines()[:SCHEDULE_SLOTS]:
                 parts = line.split(",")
                 if len(parts) >= 2 and parts[1].strip() == "1" and parts[0].strip():
                     active.append(parts[0].strip())
@@ -437,7 +438,7 @@ class SumacBotGUI(ctk.CTk):
             if SCHEDULE_CONFIG.exists():
                 try:
                     lines = SCHEDULE_CONFIG.read_text(encoding="utf-8").strip().splitlines()
-                    for i, line in enumerate(lines[:3]):
+                    for i, line in enumerate(lines[:SCHEDULE_SLOTS]):
                         parts = line.split(",")
                         if len(parts) < 2:
                             continue
