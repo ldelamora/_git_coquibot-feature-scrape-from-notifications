@@ -329,41 +329,41 @@ class SumacBotGUI(ctk.CTk):
         ctk.CTkLabel(
             tab, text="Scheduled Auto-Start",
             font=ctk.CTkFont(size=17, weight="bold"),
-        ).pack(pady=(24, 4))
+        ).pack(pady=(12, 2))
 
         ctk.CTkLabel(
             tab, text="Bot starts automatically at the enabled times (24-hour HH:MM).",
             font=ctk.CTkFont(size=13),
             text_color="gray",
-        ).pack(pady=(0, 18))
+        ).pack(pady=(0, 8))
 
         self._schedule_entries  = []
         self._schedule_switches = []
 
         for i in range(SCHEDULE_SLOTS):
             row = ctk.CTkFrame(tab, fg_color=("gray85", "gray20"), corner_radius=8)
-            row.pack(fill="x", padx=40, pady=6)
+            row.pack(fill="x", padx=40, pady=3)
 
             sw = ctk.CTkSwitch(
                 row, text=f"  Slot {i + 1}",
                 font=ctk.CTkFont(size=14),
                 width=110,
             )
-            sw.pack(side="left", padx=(16, 12), pady=14)
+            sw.pack(side="left", padx=(16, 12), pady=8)
             self._schedule_switches.append(sw)
 
             entry = ctk.CTkEntry(
                 row, width=90, placeholder_text="HH:MM",
                 font=ctk.CTkFont(size=14),
             )
-            entry.pack(side="left", padx=(0, 16), pady=14)
+            entry.pack(side="left", padx=(0, 16), pady=8)
             self._schedule_entries.append(entry)
 
         ctk.CTkButton(
             tab, text="Save Schedule", width=180, height=40,
             font=ctk.CTkFont(size=14, weight="bold"),
             command=self._save_schedule,
-        ).pack(pady=(22, 8))
+        ).pack(pady=(12, 6))
 
         self._scheduler_status = ctk.CTkLabel(
             tab, text="No active schedule.",
