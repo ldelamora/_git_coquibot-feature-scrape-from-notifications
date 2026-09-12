@@ -37,8 +37,10 @@ if getattr(sys, 'frozen', False):
 else:
     _SCRIPT_DIR = Path(__file__).parent
 
-# Matches SUMAC case codes like FA2025CV00220 (2 letters, 4 digits, 2 letters, 5 digits)
-CASE_CODE_RE = re.compile(r'[A-Z]{2}\d{4}[A-Z]{2}\d{5}')
+# Matches SUMAC case codes:
+#   - FA2025CV00220  (2 letters, 4 digits, 2 letters, 5 digits)
+#   - AP-202600232   (Tribunal Apelativo style: 2 letters, hyphen, 9 digits)
+CASE_CODE_RE = re.compile(r'[A-Z]{2}\d{4}[A-Z]{2}\d{5}|[A-Z]{2}-\d{9}')
 
 # Email configuration — credentials are read from email.txt (gitignored).
 # Line 1: sender address  (coquibot.system@gmail.com)
