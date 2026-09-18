@@ -229,7 +229,12 @@ def find_case_folder(root, case_code, _cache={}):
     """
     Search root (recursively) for a directory whose name contains case_code.
 
-    Results are cached so repeated lookups for the same code only scan once.
+    Found folders are cached so repeated lookups for the same code only scan
+    once. Misses are deliberately NOT cached: this function lives for the
+    whole GUI process (which can run for days via the Scheduler), and a
+    matching Dropbox folder may be created after an earlier miss — caching
+    "not found" would keep files stuck in UNKNOWN even after the folder shows
+    up, since a later call would return the stale None instead of rechecking.
     Returns the matching Path, or None if not found.
     """
     cache_key = (str(root), case_code)
@@ -242,7 +247,8 @@ def find_case_folder(root, case_code, _cache={}):
             result = folder
             break
 
-    _cache[cache_key] = result
+    if result is not None:
+        _cache[cache_key] = result
     return result
 
 
