@@ -458,7 +458,12 @@ def _download_from_tab(page, tab_name, filename_prefix, case_number, existing_do
             doc_title = (h1.get_attribute("title", timeout=title_timeout) or h1.inner_text(timeout=title_timeout) or "").strip()
         # Sanitize: remove characters illegal in filenames, collapse whitespace.
         doc_title = re.sub(r'[\\/:*?"<>|.]+', '', doc_title).strip()
-        doc_title = re.sub(r'\s+', ' ', doc_title)[:50]
+        doc_title = re.sub(r'\s+', ' ', doc_title)
+        if tab_label:
+            # The expediente date is already in the filename — drop a leading
+            # "21-octubre-2026 - " from the notification title.
+            doc_title = re.sub(r'^\d{1,2}-[^\W\d_]+-\d{4}\s*-?\s*', '', doc_title)
+        doc_title = doc_title[:50]
     except Exception:
         doc_title = ""
 
