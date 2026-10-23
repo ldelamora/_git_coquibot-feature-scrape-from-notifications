@@ -22,6 +22,7 @@ Usage examples:
 import csv
 import datetime
 import re
+import unicodedata
 import sys
 import shutil
 import argparse
@@ -221,6 +222,13 @@ def _send_case_emails(new_files: list[str]) -> None:
         print(f"❌ Failed to send case notification emails: {e}")
 
 
+def is_excluded_from_sync(filename):
+    """True for files that stay local and are never sent to Dropbox
+    ("NOTIFICACIÓN AUTOMÁTICA" in the name; accent/case-insensitive)."""
+    plain = unicodedata.normalize("NFD", filename).encode("ascii", "ignore").decode().lower()
+    return "notificacion automatica" in plain
+
+
 def get_case_code(filename):
     """Return the first SUMAC case code found in filename, or None."""
     match = CASE_CODE_RE.search(filename)
@@ -298,11 +306,17 @@ def copy_files_to_dropbox_subfolders(source_folder=None, destination_folder=None
     skipped_count = 0
     no_code_count = 0
     unknown_count = 0
+    excluded_count = 0
     new_files = []
     buzon_folder = destination_folder / _BUZON_FOLDER_NAME
 
     for source_file in source_files:
         filename = source_file.name
+
+        if is_excluded_from_sync(filename):
+            print(f"🚫 Not synced (NOTIFICACIÓN AUTOMÁTICA): {filename}")
+            excluded_count += 1
+            continue
 
         case_code = get_case_code(filename)
         if case_code is None:
@@ -357,8 +371,9 @@ def copy_files_to_dropbox_subfolders(source_folder=None, destination_folder=None
     print(f"  Files copied:                      {copied_count}")
     print(f"  Files skipped (already exist):     {skipped_count}")
     print(f"  Files skipped (no case code):      {no_code_count}")
+    print(f"  Files not synced (auto notices):   {excluded_count}")
     print(f"  Files routed to UNKNOWN/:           {unknown_count}")
-    print(f"  Total files processed:             {copied_count + skipped_count + no_code_count + unknown_count}")
+    print(f"  Total files processed:             {copied_count + skipped_count + no_code_count + unknown_count + excluded_count}")
     print("=" * 60)
 
     if new_files:
@@ -480,6 +495,11 @@ def preview_organization(source_folder=None, destination_folder=None):
     for source_file in sorted(source_files):
         filename = source_file.name
         case_code = get_case_code(filename)
+
+        if is_excluded_from_sync(filename):
+            print(f"🚫 {filename}")
+            print(f"       NOTIFICACIÓN AUTOMÁTICA — would not be synced")
+            continue
 
         if case_code is None:
             print(f"⚠️  {filename}")
