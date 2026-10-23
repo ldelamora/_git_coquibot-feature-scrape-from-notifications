@@ -1353,17 +1353,21 @@ def run():
     # never rely on Playwright's internal browser discovery (which points
     # to the temp extraction folder and ignores PLAYWRIGHT_BROWSERS_PATH).
     _chrome_exe = None
+    # Falls back to the standard AppData install when nothing sits next to the exe.
     if getattr(sys, 'frozen', False):
-        _ms_playwright = Path(sys.executable).parent / "ms-playwright"
-        for _d in sorted(_ms_playwright.glob("chromium-*"), reverse=True):
-            _c = _d / "chrome-win64" / "chrome.exe"
-            if _c.exists():
-                _chrome_exe = str(_c)
+        for _ms_playwright in (Path(sys.executable).parent / "ms-playwright",
+                               Path.home() / "AppData" / "Local" / "ms-playwright"):
+            for _d in sorted(_ms_playwright.glob("chromium-*"), reverse=True):
+                _c = _d / "chrome-win64" / "chrome.exe"
+                if _c.exists():
+                    _chrome_exe = str(_c)
+                    break
+            if _chrome_exe:
                 break
         if _chrome_exe:
             print(f"Using Chromium: {_chrome_exe}")
         else:
-            print("⚠️  chrome.exe not found next to exe — using Playwright default")
+            print("⚠️  chrome.exe not found next to exe or in AppData — using Playwright default")
 
     try:
         with sync_playwright() as p:
@@ -1403,7 +1407,7 @@ def run():
     except Exception as e:
         # Catch errors during playwright context cleanup (e.g. greenlet/thread errors
         # when stop() closes the browser from the GUI thread).
-        print(f"\n[Browser session ended: {e.__class__.__name__}]")
+        print(f"\n[Browser session ended: {e.__class__.__name__}: {str(e).splitlines()[0] if str(e) else ''}]")
     finally:
         _active_browser = None
 
