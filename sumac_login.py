@@ -76,16 +76,18 @@ def read_credentials():
     return lines[0], lines[1]
 
 
-def _truncate_filename(fname, max_length=100):
+def _build_filename(prefix, middle, case_number, max_length=100):
     """
-    Cap a filename at `max_length` characters, preserving its extension.
-    If truncation is needed, "..." is inserted before the extension.
+    Build "<prefix><middle>_<case_number>.pdf", with the case number last.
+    If the name exceeds `max_length`, "..." replaces the tail of the middle so
+    the case number and extension always survive.
     """
-    if len(fname) <= max_length:
-        return fname
-    stem, ext = os.path.splitext(fname)
-    keep = max_length - len(ext) - 3  # room for "..." + extension
-    return f"{stem[:keep]}...{ext}"
+    suffix = f"_{case_number}.pdf"
+    stem = f"{prefix}{middle}"
+    keep = max_length - len(suffix)
+    if len(stem) > keep:
+        stem = f"{stem[:keep - 3]}..."
+    return stem + suffix
 
 
 def _cookie_header(page):
@@ -168,14 +170,24 @@ def _remaining_s(deadline, default_s):
     return max(1, deadline - time.time())
 
 
-def _already_downloaded(prefix):
-    """Return True if sumac_documents already contains a file whose name starts with
-    prefix, comparing only the first 80 characters."""
+def _count_expediente_docs(filename_prefix, case_number):
+    """Count the Documento/Notificación files already saved for one expediente.
+
+    Filenames are "<prefix> - <title>_<case>.pdf" (or "<prefix>_<case>.pdf" when
+    there is no title); anejos are "<prefix>_anejo_<n>..." and are excluded."""
     dest = Path("sumac_documents")
     if not dest.exists():
-        return False
-    prefix = prefix[:80]
-    return any(f.name[:80].startswith(prefix) for f in dest.iterdir() if f.is_file())
+        return 0
+    suffix = f"_{case_number}.pdf"
+    n = len(filename_prefix)
+    return sum(
+        1 for f in dest.iterdir()
+        if f.is_file()
+        and f.name.startswith(filename_prefix)
+        and f.name.endswith(suffix)
+        and f.name[n:n + 1] in (" ", "_")
+        and not f.name[n:].startswith("_anejo_")
+    )
 
 
 def _cleanup_old_pdfs(months=6):
@@ -222,8 +234,8 @@ def _wait_for_all_tiles(page, timeout=5000):
 
 
 
-def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captured_pdf_data,
-                       stale_blob_srcs=None):
+def _download_from_tab(page, tab_name, filename_prefix, case_number, existing_docs,
+                       captured_pdf_urls, captured_pdf_data, stale_blob_srcs=None):
     """
     Download the PDF for a given tab (Notificación or Documento) inside an
     expediente detail view.  Returns True as soon as one PDF is saved, False
@@ -240,6 +252,8 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
 
     For Notificación, only strategies 1–3 apply (no left-pillbox button).
 
+    existing_docs   — number of Documento/Notificación files already saved for this
+                      expediente before this run started (see _count_expediente_docs).
     stale_blob_srcs — set of blob: URLs that were already in the browser's DOM
                       before the current expediente was opened.  Any blob URL
                       found in this set is from a previous expediente's render
@@ -263,22 +277,11 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
     # None for Notificación, so every budget check further down is a no-op there.
     documento_deadline = (time.time() + 5.0) if not tab_label else None
 
-    # Skip if already saved in a prior run.
-    # Notificación filenames start with "{prefix}_Notificación", so a simple
-    # prefix check works.  Documento filenames have no extra segment after the
-    # prefix — they look like "{prefix} - Title.pdf" — so we check for a space
-    # or dot immediately after the prefix to avoid false matches with anejos
-    # (which would also start with the same prefix).
-    if tab_label:
-        already_dl = _already_downloaded(f"{filename_prefix}_{tab_label}")
-    else:
-        _dest_dl = Path("sumac_documents")
-        already_dl = _dest_dl.exists() and any(
-            f.name.startswith(filename_prefix)
-            and len(f.name) > len(filename_prefix)
-            and f.name[len(filename_prefix)] in ('.', ' ')
-            for f in _dest_dl.iterdir() if f.is_file()
-        )
+    # Skip if already saved in a prior run.  Documento and Notificación files
+    # share one name shape ("<prefix> - <title>_<case>.pdf"), so they are told
+    # apart by count: a prior run that saved one file covers the Documento, two
+    # files cover Documento + Notificación.
+    already_dl = existing_docs >= (1 if not tab_label else 2)
     if already_dl:
         print(f"    [{tab_name}] Already downloaded, skipping.")
         return True
@@ -310,8 +313,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
                 with page.expect_download(timeout=_remaining_ms(documento_deadline, 5000)) as dl_info:
                     left_dl_btn.click(timeout=_remaining_ms(documento_deadline, 30000))
                 dl = dl_info.value
-                fname = f"{filename_prefix}{title_part}.pdf"
-                save_path = os.path.join("sumac_documents", _truncate_filename(fname))
+                save_path = os.path.join("sumac_documents", _build_filename(filename_prefix, title_part, case_number))
                 dl.save_as(save_path)
                 print(f"    [Documento] Saved from left pillbox: {save_path}")
                 return True
@@ -332,8 +334,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
                 if left_iframe_loc.count() > 0 and left_iframe_loc.first.is_visible():
                     left_url = left_iframe_loc.first.get_attribute("src", timeout=_remaining_ms(documento_deadline, 2000))
                 if left_url and (stale_blob_srcs is None or left_url not in stale_blob_srcs):
-                    fname = f"{filename_prefix}{title_part}.pdf"
-                    save_path = os.path.join("sumac_documents", _truncate_filename(fname))
+                    save_path = os.path.join("sumac_documents", _build_filename(filename_prefix, title_part, case_number))
                     if _save_pdf_from_url(page, left_url, save_path, captured_pdf_data, timeout=_remaining_s(documento_deadline, 30)):
                         print(f"    [Documento] Saved from left pillbox iframe: {save_path}")
                         return True
@@ -461,7 +462,9 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
     except Exception:
         doc_title = ""
 
-    title_part = f" - {doc_title}" if doc_title else ""
+    # Without a title, Notificación keeps its tab name so it cannot collide with
+    # the Documento filename.
+    title_part = f" - {doc_title}" if doc_title else (f" - {tab_label}" if tab_label else "")
 
     # ── Strategy 0d (recourse layout): Tribunal Apelativo docket entries use a
     # two-column .recourseDocumentContainer__view where the Documento
@@ -479,8 +482,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
             except Exception:
                 rec_url = None
             if rec_url and (stale_blob_srcs is None or rec_url not in stale_blob_srcs):
-                fname = f"{filename_prefix}{title_part}.pdf"
-                save_path = os.path.join("sumac_documents", _truncate_filename(fname))
+                save_path = os.path.join("sumac_documents", _build_filename(filename_prefix, title_part, case_number))
                 if _save_pdf_from_url(page, rec_url, save_path, captured_pdf_data,
                                       timeout=_remaining_s(documento_deadline, 30)):
                     print(f"    [Documento] Saved from recourse documents pillbox: {save_path}")
@@ -520,8 +522,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
             if tab_iframe_loc.count() > 0 and tab_iframe_loc.is_visible():
                 tab_iframe_url = tab_iframe_loc.get_attribute("src", timeout=_remaining_ms(documento_deadline, 2000))
             if tab_iframe_url and (stale_blob_srcs is None or tab_iframe_url not in stale_blob_srcs):
-                fname = f"{filename_prefix}_{tab_label}{title_part}.pdf" if tab_label else f"{filename_prefix}{title_part}.pdf"
-                save_path = os.path.join("sumac_documents", _truncate_filename(fname))
+                save_path = os.path.join("sumac_documents", _build_filename(filename_prefix, title_part, case_number))
                 if _save_pdf_from_url(page, tab_iframe_url, save_path, captured_pdf_data, timeout=_remaining_s(documento_deadline, 30)):
                     print(f"    [{tab_name}] Saved from iframe src: {save_path}")
                     return True
@@ -546,8 +547,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
                     with page.expect_download(timeout=1000) as dl_info:
                         dl_btn.nth(j).click(timeout=_remaining_ms(documento_deadline, 30000))
                     dl = dl_info.value
-                    fname = f"{filename_prefix}_{tab_label}{title_part}.pdf" if tab_label else f"{filename_prefix}{title_part}.pdf"
-                    save_path = os.path.join("sumac_documents", _truncate_filename(fname))
+                    save_path = os.path.join("sumac_documents", _build_filename(filename_prefix, title_part, case_number))
                     dl.save_as(save_path)
                     print(f"    Saved: {save_path}")
                     return True
@@ -570,8 +570,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
                         with page.expect_download(timeout=1000) as dl_info:
                             elems.nth(j).click(timeout=_remaining_ms(documento_deadline, 30000))
                         dl = dl_info.value
-                        fname = f"{filename_prefix}_{tab_label}{title_part}.pdf" if tab_label else f"{filename_prefix}{title_part}.pdf"
-                        save_path = os.path.join("sumac_documents", _truncate_filename(fname))
+                        save_path = os.path.join("sumac_documents", _build_filename(filename_prefix, title_part, case_number))
                         dl.save_as(save_path)
                         print(f"    Saved: {save_path}")
                         return True
@@ -606,8 +605,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
         if documento_deadline and time.time() > documento_deadline:
             print(f"    [Documento] 5 s time budget exceeded — moving on.")
             return False
-        fname = f"{filename_prefix}_{tab_label}{title_part}.pdf" if tab_label else f"{filename_prefix}{title_part}.pdf"
-        save_path = os.path.join("sumac_documents", _truncate_filename(fname))
+        save_path = os.path.join("sumac_documents", _build_filename(filename_prefix, title_part, case_number))
         print(f"    [{tab_name}] Saving intercepted PDF: {url}")
         if _save_pdf_from_url(page, url, save_path, captured_pdf_data, timeout=_remaining_s(documento_deadline, 30)):
             captured_pdf_urls[:] = [u for u in captured_pdf_urls if u != url]
@@ -619,7 +617,7 @@ def _download_from_tab(page, tab_name, filename_prefix, captured_pdf_urls, captu
     return False
 
 
-def _download_anejo_attachments(page, filename_prefix, captured_pdf_data, session_blob_srcs=None):
+def _download_anejo_attachments(page, filename_prefix, case_number, captured_pdf_data, session_blob_srcs=None):
     """
     Download all Anejo (attachment) PDFs inside an expediente detail view.
 
@@ -639,14 +637,14 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_data, sessio
          download button (Strategy A).  Fall back to reading the right-pillbox
          iframe src directly (Strategy B).
 
-    Filenames follow the pattern: <prefix>_anejo_<n> - <label>_<original>.pdf
+    Filenames follow the pattern: <prefix>_anejo_<n> - <label>_<original>_<case>.pdf
     """
     # BEM class confirmed from DOM inspection.
     container = page.locator("div.caseEntryDocumentContainer__attachmentsPillbox")
     if container.count() == 0:
         # Tribunal Apelativo docket entries use a different anejo list
         # (.recourseFilingAttachmentTile__view tiles in a sidebar). Try that.
-        _download_recourse_anejos(page, filename_prefix, captured_pdf_data, session_blob_srcs)
+        _download_recourse_anejos(page, filename_prefix, case_number, captured_pdf_data, session_blob_srcs)
         return
 
     # Scroll the inner scrollable area fully right then back to the start
@@ -730,8 +728,7 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_data, sessio
                 # Strip whatever extension the server provides and force .pdf —
                 # SUMAC sometimes omits the extension or sends a non-pdf suffix.
                 base = Path(dl.suggested_filename).stem if dl.suggested_filename else "attachment"
-                fname = f"{filename_prefix}_anejo_{j + 1}{label_part}_{base}.pdf"
-                save_path = os.path.join("sumac_documents", _truncate_filename(fname))
+                save_path = os.path.join("sumac_documents", _build_filename(filename_prefix, f"_anejo_{j + 1}{label_part}_{base}", case_number))
                 dl.save_as(save_path)
                 print(f"    [Anejo] Saved: {save_path}")
                 page.wait_for_timeout(2000)
@@ -759,8 +756,7 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_data, sessio
             anejo_url = None
 
         if anejo_url and (session_blob_srcs is None or anejo_url not in session_blob_srcs):
-            fname = f"{filename_prefix}_anejo_{j + 1}{label_part}.pdf"
-            save_path = os.path.join("sumac_documents", _truncate_filename(fname))
+            save_path = os.path.join("sumac_documents", _build_filename(filename_prefix, f"_anejo_{j + 1}{label_part}", case_number))
             print(f"    [Anejo] Saving from right pillbox iframe: {anejo_url}")
             if _save_pdf_from_url(page, anejo_url, save_path, captured_pdf_data):
                 captured_pdf_data.pop(anejo_url, None)
@@ -771,7 +767,7 @@ def _download_anejo_attachments(page, filename_prefix, captured_pdf_data, sessio
         print(f"    [Anejo] Could not save attachment {j + 1}.")
 
 
-def _download_recourse_anejos(page, filename_prefix, captured_pdf_data, session_blob_srcs=None):
+def _download_recourse_anejos(page, filename_prefix, case_number, captured_pdf_data, session_blob_srcs=None):
     """
     Download the Anejo PDFs of a Tribunal Apelativo (TA) docket entry.
 
@@ -857,8 +853,7 @@ def _download_recourse_anejos(page, filename_prefix, captured_pdf_data, session_
             page.wait_for_timeout(200)
 
         if anejo_url:
-            fname = f"{_anejo_prefix}{label_part}.pdf"
-            save_path = os.path.join("sumac_documents", _truncate_filename(fname))
+            save_path = os.path.join("sumac_documents", _build_filename(_anejo_prefix, label_part, case_number))
             print(f"    [Anejo] Saving from tools pillbox iframe: {anejo_url}")
             if _save_pdf_from_url(page, anejo_url, save_path, captured_pdf_data):
                 captured_pdf_data.pop(anejo_url, None)
@@ -960,7 +955,8 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
 
     # Build the filename prefix: date first so files sort chronologically.
     date_prefix = f"{exp_date}_" if exp_date else ""
-    filename_prefix = f"{date_prefix}[{exp_number}]_{case_number}"
+    filename_prefix = f"{date_prefix}[{exp_number}]"  # case number is appended at the end of each filename
+    existing_docs = _count_expediente_docs(filename_prefix, case_number)
 
     # 1. Documento first — uses the left-pillbox download button, which is
     #    present as soon as the expediente opens (SUMAC auto-selects the first
@@ -968,12 +964,12 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     #    the anejo pillbox stays intact for step 2.  For expedientes without
     #    anejos the left pillbox is absent and the function falls back to a
     #    tab click automatically.
-    _download_from_tab(page, "Documento", filename_prefix, captured_pdf_urls, captured_pdf_data,
+    _download_from_tab(page, "Documento", filename_prefix, case_number, existing_docs, captured_pdf_urls, captured_pdf_data,
                        session_blob_srcs)
     print(f"    [timing] Documento done at +{time.time() - t_exp_start:.1f}s")
 
     # 2. Anejos — the pillbox is still visible because no tab was clicked above.
-    _download_anejo_attachments(page, filename_prefix, captured_pdf_data, session_blob_srcs)
+    _download_anejo_attachments(page, filename_prefix, case_number, captured_pdf_data, session_blob_srcs)
     print(f"    [timing] Anejo done at +{time.time() - t_exp_start:.1f}s")
 
     # 3. Notificación last — clicking its tab changes the view (pillbox gone),
@@ -998,7 +994,7 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     page.wait_for_timeout(400)
     captured_pdf_urls.clear()
     captured_pdf_data.clear()
-    _download_from_tab(page, "Notificación", filename_prefix, captured_pdf_urls, captured_pdf_data,
+    _download_from_tab(page, "Notificación", filename_prefix, case_number, existing_docs, captured_pdf_urls, captured_pdf_data,
                        session_blob_srcs)
     print(f"    [timing] Notificación done at +{time.time() - t_exp_start:.1f}s")
 

@@ -100,13 +100,14 @@ def _sanitize(text: str, max_len: int = 50) -> str:
     return re.sub(r"\s+", " ", text)[:max_len]
 
 
-def _already_downloaded(filename_prefix: str) -> bool:
+def _already_downloaded(filename_prefix: str, case_number: str) -> bool:
+    # Filenames are "<prefix> - <title>_<case>.pdf" (case number last).
     if not OUTPUT_DIR.exists():
         return False
     return any(
         f.name.startswith(filename_prefix)
-        and len(f.name) > len(filename_prefix)
-        and f.name[len(filename_prefix)] in (".", " ")
+        and f.name.endswith(f"_{case_number}.pdf")
+        and f.name[len(filename_prefix):len(filename_prefix) + 1] in ("_", " ")
         for f in OUTPUT_DIR.iterdir() if f.is_file()
     )
 
@@ -135,7 +136,7 @@ def _save_blob(page, url: str, save_path: str) -> bool:
         return False
 
 
-def _download_documento(page, filename_prefix: str,
+def _download_documento(page, filename_prefix: str, case_number: str,
                         stale_blob_srcs: set,
                         captured_pdf_urls: list,
                         captured_pdf_data: dict) -> bool:
@@ -153,7 +154,7 @@ def _download_documento(page, filename_prefix: str,
     """
     OUTPUT_DIR.mkdir(exist_ok=True)
 
-    if _already_downloaded(filename_prefix):
+    if _already_downloaded(filename_prefix, case_number):
         print("    Already downloaded — skipping.")
         return True
 
@@ -175,7 +176,7 @@ def _download_documento(page, filename_prefix: str,
         except Exception:
             pass
         title_part = f" - {left_title}" if left_title else ""
-        fname      = f"{filename_prefix}{title_part}.pdf"
+        fname      = f"{filename_prefix}{title_part}_{case_number}.pdf"
         save_path  = str(OUTPUT_DIR / fname)
 
         # 0a: download button
@@ -238,7 +239,7 @@ def _download_documento(page, filename_prefix: str,
     except Exception:
         pass
     title_part = f" - {doc_title}" if doc_title else ""
-    fname      = f"{filename_prefix}{title_part}.pdf"
+    fname      = f"{filename_prefix}{title_part}_{case_number}.pdf"
     save_path  = str(OUTPUT_DIR / fname)
 
     new_urls = [u for u in captured_pdf_urls if u not in urls_before]
@@ -567,11 +568,11 @@ class SearchCasesApp(ctk.CTk):
                             continue
 
                         date_prefix     = f"{exp_dates[i]}_" if exp_dates[i] else ""
-                        filename_prefix = f"{date_prefix}[{exp_number}]_{case_number}"
+                        filename_prefix = f"{date_prefix}[{exp_number}]"
 
                         # Skip the tile click entirely if the Documento was
                         # already downloaded in a previous run.
-                        if _already_downloaded(filename_prefix):
+                        if _already_downloaded(filename_prefix, case_number):
                             print(f"    Already downloaded — skipping.")
                             continue
 
@@ -588,7 +589,7 @@ class SearchCasesApp(ctk.CTk):
                                 page.wait_for_timeout(1000)
 
                             _download_documento(
-                                page, filename_prefix,
+                                page, filename_prefix, case_number,
                                 stale_blob_srcs,
                                 captured_pdf_urls,
                                 captured_pdf_data,
