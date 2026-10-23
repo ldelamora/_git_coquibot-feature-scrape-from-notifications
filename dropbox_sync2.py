@@ -53,7 +53,9 @@ _DROPBOX_DEFAULT = Path(r"C:\Users\luisd\Dropbox\Coquibot")
 _DROPBOX_LOG     = _SCRIPT_DIR / "dropboxLog.txt"
 _CASES_EMAILS = _SCRIPT_DIR / "casesEmails.csv"
 
-_BATCH_SIZE = 10  # max attachments per case notification email
+_BUZON_FOLDER_NAME = "_Buzon_de_Mindie"  # created directly under the Dropbox destination
+
+_BATCH_SIZE = 10 # max attachments per case notification email
 
 _CASE_EMAIL_SUBJECT = "Timothée-Vega Law: Nuevos documentos relacionados con su caso"
 _CASE_EMAIL_BODY    = """\
@@ -297,6 +299,7 @@ def copy_files_to_dropbox_subfolders(source_folder=None, destination_folder=None
     no_code_count = 0
     unknown_count = 0
     new_files = []
+    buzon_folder = destination_folder / _BUZON_FOLDER_NAME
 
     for source_file in source_files:
         filename = source_file.name
@@ -339,6 +342,15 @@ def copy_files_to_dropbox_subfolders(source_folder=None, destination_folder=None
                 new_files.append(filename)
             except (shutil.Error, PermissionError, OSError) as e:
                 print(f"❌ Error copying {filename}: {e}")
+                continue
+
+            # Also drop a copy in the Mindie mailbox folder
+            try:
+                buzon_folder.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source_file, buzon_folder / filename)
+                print(f"       → {_BUZON_FOLDER_NAME}/")
+            except (shutil.Error, PermissionError, OSError) as e:
+                print(f"❌ Error copying {filename} to {_BUZON_FOLDER_NAME}: {e}")
 
     print("\n" + "=" * 60)
     print("SUMMARY:")
