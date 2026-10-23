@@ -271,7 +271,8 @@ def _download_from_tab(page, tab_name, filename_prefix, case_number, existing_do
     # Omit the tab name from Documento filenames — the doc title already identifies it.
     tab_label = "" if tab_name == "Documento" else tab_name
 
-    # Documento gets a hard 5 s wall-clock budget covering every strategy below
+    # Documento gets a hard 5 s wall-clock budget (15 s on the left-pillbox path)
+    # covering every strategy below
     # (including the left-pillbox path and any urllib fallback download): once it
     # expires we give up and move on, no matter which strategy is mid-flight.
     # None for Notificación, so every budget check further down is a no-op there.
@@ -297,6 +298,10 @@ def _download_from_tab(page, tab_name, filename_prefix, case_number, existing_do
             " .caseEntryDocumentContainer__downloadButton"
         )
         if left_dl_btn.count() > 0:
+            # The left pillbox renders its header and button right away, but the
+            # Documento PDF behind them can take ~8-9 s to load (observed on
+            # RN2025CV00064 #199, a 2-page PDF), so this path gets 15 s, not 5 s.
+            documento_deadline = time.time() + 15.0
             left_title = ""
             try:
                 h1 = page.locator(
@@ -309,47 +314,40 @@ def _download_from_tab(page, tab_name, filename_prefix, case_number, existing_do
             except Exception:
                 left_title = ""
             title_part = f" - {left_title}" if left_title else ""
-            try:
-                # Cap 0a at 2.5 s: when the button opens the PDF inline instead of
-                # downloading, waiting out the whole budget here starves 0b.
-                with page.expect_download(timeout=min(2500, _remaining_ms(documento_deadline, 5000))) as dl_info:
-                    left_dl_btn.click(timeout=_remaining_ms(documento_deadline, 30000))
-                dl = dl_info.value
-                save_path = os.path.join("sumac_documents", _build_filename(filename_prefix, title_part, case_number))
-                dl.save_as(save_path)
-                print(f"    [Documento] Saved from left pillbox: {save_path}")
-                return True
-            except Exception as e:
-                print(f"    [Documento] Left pillbox button failed: {e}")
+            save_path = os.path.join("sumac_documents", _build_filename(filename_prefix, title_part, case_number))
 
-            # Strategy 0b: the button sometimes opens the PDF inline rather than
-            # triggering a browser download.  Read the blob URL directly from the
-            # left-pillbox iframe — same technique used for anejos' right pillbox.
-            # Guard: only use the blob URL if the iframe is VISIBLE (not hidden) and
-            # not in stale_blob_srcs (blobs from previous expedientes persist in
-            # browser memory and may still appear in hidden DOM nodes).
-            # Poll until the deadline — the left PDF viewer may still be rendering
-            # right after the expediente opens.
+            # Strategy 0b first: wait for the left-pillbox iframe to show the
+            # Documento PDF and read its blob URL directly.  Guards: the iframe
+            # must be VISIBLE and its src not in stale_blob_srcs (blobs from
+            # previous expedientes persist in browser memory and may still appear
+            # in hidden DOM nodes).  Leaves the last 3 s for the button below.
             left_iframe_loc = page.locator(
                 ".caseEntryDocumentContainer__leftPillbox iframe.PDFViewer__embedArea"
             )
-            while True:
+            while time.time() < documento_deadline - 3.0:
                 try:
                     left_url = None
                     if left_iframe_loc.count() > 0 and left_iframe_loc.first.is_visible():
-                        left_url = left_iframe_loc.first.get_attribute("src", timeout=_remaining_ms(documento_deadline, 2000))
+                        left_url = left_iframe_loc.first.get_attribute("src", timeout=1000)
                     if left_url and (stale_blob_srcs is None or left_url not in stale_blob_srcs):
-                        save_path = os.path.join("sumac_documents", _build_filename(filename_prefix, title_part, case_number))
                         if _save_pdf_from_url(page, left_url, save_path, captured_pdf_data, timeout=_remaining_s(documento_deadline, 30)):
                             print(f"    [Documento] Saved from left pillbox iframe: {save_path}")
                             return True
                 except Exception:
                     pass
-                if time.time() > documento_deadline:
-                    break
                 page.wait_for_timeout(200)
 
-            # Both 0a (button) and 0b (iframe src) failed while the left pillbox
+            # Strategy 0a fallback: the left download button.
+            try:
+                with page.expect_download(timeout=_remaining_ms(documento_deadline, 5000)) as dl_info:
+                    left_dl_btn.click(timeout=_remaining_ms(documento_deadline, 30000))
+                dl_info.value.save_as(save_path)
+                print(f"    [Documento] Saved from left pillbox: {save_path}")
+                return True
+            except Exception as e:
+                print(f"    [Documento] Left pillbox button failed: {e}")
+
+            # Both 0b (iframe src) and 0a (button) failed while the left pillbox
             # is present.  The entry has no downloadable PDF (e.g. a text-only
             # ORDEN/ENTERADO).  Return now — falling through to the tab-click
             # would fire Strategy 3's stale-URL fallback and save the wrong bytes.
