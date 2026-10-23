@@ -34,6 +34,7 @@
 
 import os
 import sys
+import unicodedata
 from pathlib import Path
 
 # Point Playwright to the correct Chromium installation.
@@ -74,6 +75,25 @@ def read_credentials():
     if len(lines) < 2:
         raise ValueError("sumac.txt must have username on line 1 and password on line 2")
     return lines[0], lines[1]
+
+
+def _trib_marker(title, is_notification):
+    """Return " - (Trib)" when the title marks a court-issued item, else "".
+
+    Accent- and case-insensitive match on the full (untruncated) title:
+      - notification titled "Notificación de resolución" or "Notificación de orden"
+      - Documento whose title contains "Minuta"
+      - any Documento/notification containing "Notificación de secretaría"
+    """
+    t = unicodedata.normalize("NFD", title).encode("ascii", "ignore").decode().lower()
+    t = re.sub(r"\s+", " ", t)
+    if "notificacion de secretaria" in t:
+        return " - (Trib)"
+    if is_notification and ("notificacion de resolucion" in t or "notificacion de orden" in t):
+        return " - (Trib)"
+    if not is_notification and "minuta" in t:
+        return " - (Trib)"
+    return ""
 
 
 def _build_filename(prefix, middle, case_number, max_length=100):
@@ -310,10 +330,12 @@ def _download_from_tab(page, tab_name, filename_prefix, case_number, existing_do
                 ).first
                 left_title = (h1.get_attribute("title", timeout=_remaining_ms(documento_deadline, 1000)) or h1.inner_text(timeout=_remaining_ms(documento_deadline, 1000)) or "").strip()
                 left_title = re.sub(r'[\\/:*?"<>|.]+', '', left_title).strip()
-                left_title = re.sub(r'\s+', ' ', left_title)[:50]
+                left_title = re.sub(r'\s+', ' ', left_title)
             except Exception:
                 left_title = ""
-            title_part = f" - {left_title}" if left_title else ""
+            trib = _trib_marker(left_title, False)
+            left_title = left_title[:50]
+            title_part = trib + (f" - {left_title}" if left_title else "")
             save_path = os.path.join("sumac_documents", _build_filename(filename_prefix, title_part, case_number))
 
             # Strategy 0b first: wait for the left-pillbox iframe to show the
@@ -445,6 +467,7 @@ def _download_from_tab(page, tab_name, filename_prefix, case_number, existing_do
     # Read the document title shown in the tab header.  Use a tab-specific
     # selector so a hidden Documento header never bleeds into Notificación.
     doc_title = ""
+    trib = ""
     try:
         if tab_label:
             # Notificación: title is in the notification PDF viewer heading.
@@ -469,13 +492,14 @@ def _download_from_tab(page, tab_name, filename_prefix, case_number, existing_do
             # The expediente date is already in the filename — drop a leading
             # "21-octubre-2026 - " from the notification title.
             doc_title = re.sub(r'^\d{1,2}-[^\W\d_]+-\d{4}\s*-?\s*', '', doc_title)
+        trib = _trib_marker(doc_title, bool(tab_label))
         doc_title = doc_title[:50]
     except Exception:
         doc_title = ""
 
     # Without a title, Notificación keeps its tab name so it cannot collide with
     # the Documento filename.
-    title_part = f" - {doc_title}" if doc_title else (f" - {tab_label}" if tab_label else "")
+    title_part = trib + (f" - {doc_title}" if doc_title else (f" - {tab_label}" if tab_label else ""))
 
     # ── Strategy 0d (recourse layout): Tribunal Apelativo docket entries use a
     # two-column .recourseDocumentContainer__view where the Documento
