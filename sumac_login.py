@@ -1019,7 +1019,7 @@ def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, c
     Level 2: open one case, process its expedientes, then return to Level 1.
 
     Expediente numbers are snapshotted before any navigation because the tile
-    list disappears from the DOM once we drill into an expediente.  Up to 12
+    list disappears from the DOM once we drill into an expediente.  Up to 2
     expedientes are processed per case (configured in the loop below).
 
     case_idx      — zero-based tile index; re-queried after each navigation
@@ -1162,7 +1162,7 @@ def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, c
 
     print(f"  Found {exp_count} expedientes: {exp_numbers}")
 
-    for i, exp_number in enumerate(exp_numbers[:5]):
+    for i, exp_number in enumerate(exp_numbers[:2]):
         try:
             _process_expediente(page, i, case_number, exp_number, exp_dates[i], captured_pdf_urls, captured_pdf_data,
                                 session_blob_srcs)
