@@ -310,7 +310,9 @@ def _download_from_tab(page, tab_name, filename_prefix, case_number, existing_do
                 left_title = ""
             title_part = f" - {left_title}" if left_title else ""
             try:
-                with page.expect_download(timeout=_remaining_ms(documento_deadline, 5000)) as dl_info:
+                # Cap 0a at 2.5 s: when the button opens the PDF inline instead of
+                # downloading, waiting out the whole budget here starves 0b.
+                with page.expect_download(timeout=min(2500, _remaining_ms(documento_deadline, 5000))) as dl_info:
                     left_dl_btn.click(timeout=_remaining_ms(documento_deadline, 30000))
                 dl = dl_info.value
                 save_path = os.path.join("sumac_documents", _build_filename(filename_prefix, title_part, case_number))
@@ -326,20 +328,26 @@ def _download_from_tab(page, tab_name, filename_prefix, case_number, existing_do
             # Guard: only use the blob URL if the iframe is VISIBLE (not hidden) and
             # not in stale_blob_srcs (blobs from previous expedientes persist in
             # browser memory and may still appear in hidden DOM nodes).
-            try:
-                left_iframe_loc = page.locator(
-                    ".caseEntryDocumentContainer__leftPillbox iframe.PDFViewer__embedArea"
-                )
-                left_url = None
-                if left_iframe_loc.count() > 0 and left_iframe_loc.first.is_visible():
-                    left_url = left_iframe_loc.first.get_attribute("src", timeout=_remaining_ms(documento_deadline, 2000))
-                if left_url and (stale_blob_srcs is None or left_url not in stale_blob_srcs):
-                    save_path = os.path.join("sumac_documents", _build_filename(filename_prefix, title_part, case_number))
-                    if _save_pdf_from_url(page, left_url, save_path, captured_pdf_data, timeout=_remaining_s(documento_deadline, 30)):
-                        print(f"    [Documento] Saved from left pillbox iframe: {save_path}")
-                        return True
-            except Exception:
-                pass
+            # Poll until the deadline — the left PDF viewer may still be rendering
+            # right after the expediente opens.
+            left_iframe_loc = page.locator(
+                ".caseEntryDocumentContainer__leftPillbox iframe.PDFViewer__embedArea"
+            )
+            while True:
+                try:
+                    left_url = None
+                    if left_iframe_loc.count() > 0 and left_iframe_loc.first.is_visible():
+                        left_url = left_iframe_loc.first.get_attribute("src", timeout=_remaining_ms(documento_deadline, 2000))
+                    if left_url and (stale_blob_srcs is None or left_url not in stale_blob_srcs):
+                        save_path = os.path.join("sumac_documents", _build_filename(filename_prefix, title_part, case_number))
+                        if _save_pdf_from_url(page, left_url, save_path, captured_pdf_data, timeout=_remaining_s(documento_deadline, 30)):
+                            print(f"    [Documento] Saved from left pillbox iframe: {save_path}")
+                            return True
+                except Exception:
+                    pass
+                if time.time() > documento_deadline:
+                    break
+                page.wait_for_timeout(200)
 
             # Both 0a (button) and 0b (iframe src) failed while the left pillbox
             # is present.  The entry has no downloadable PDF (e.g. a text-only
