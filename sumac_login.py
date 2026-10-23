@@ -1102,7 +1102,7 @@ def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, c
 
             print(f"  Found {docket_count} docket entries: {docket_numbers}")
 
-            for i, docket_number in enumerate(docket_numbers):
+            for i, docket_number in enumerate(docket_numbers[:2]):
                 try:
                     # Same _process_expediente used for regular expedientes —
                     # the detail view (Documento/Anejo/Notificación) is identical,
