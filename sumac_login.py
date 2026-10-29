@@ -117,15 +117,17 @@ def _presented_by_initials(pdf_path, max_initials=5):
     cannot be read or has no "presentada por"."""
     try:
         from pypdf import PdfReader
-        text = " ".join((p.extract_text() or "") for p in PdfReader(pdf_path).pages)
+        text = "\n".join((p.extract_text() or "") for p in PdfReader(pdf_path).pages)
     except Exception as e:
         print(f"    [Rename] Could not read {pdf_path}: {e}")
         return ""
-    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s+", " ", _unshift_cipher_lines(text))
     m = re.search(r"presentada\s+por\s+([^(]+)\(", text, re.IGNORECASE)
     if not m:
         return ""
-    words = re.findall(r"[^\W\d_]+", m.group(1))
+    # Accented letters in shifted text decode to C1 control chars or U+FFFD;
+    # keep them inside the word so e.g. "NÉCTAR" does not yield an extra initial.
+    words = re.findall(r"(?:[^\W\d_]|[\x80-\x9f\ufffd])+", m.group(1))
     return "".join(w[0].upper() for w in words)[:max_initials]
 
 
