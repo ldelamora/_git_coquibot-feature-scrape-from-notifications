@@ -133,7 +133,7 @@ class SumacBotGUI(ctk.CTk):
             font=ctk.CTkFont(size=17, weight="bold"),
         ).pack(pady=(24, 12))
 
-        self._recipients_frame = ctk.CTkScrollableFrame(tab, width=540, height=150)
+        self._recipients_frame = ctk.CTkScrollableFrame(tab, width=540, height=120)
         self._recipients_frame.pack(padx=16, pady=(0, 12))
 
         add_frame = ctk.CTkFrame(tab, fg_color="transparent")
@@ -155,10 +155,32 @@ class SumacBotGUI(ctk.CTk):
 
         self._refresh_recipient_list()
 
+        wait_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        wait_frame.pack(pady=(4, 0))
+
+        ctk.CTkLabel(
+            wait_frame, text="Wait days for clients",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(side="left", padx=(0, 10))
+
+        self._wait_days_entry = ctk.CTkEntry(
+            wait_frame, width=70,
+            font=ctk.CTkFont(size=13),
+        )
+        self._wait_days_entry.insert(0, self._read_wait_days())
+        self._wait_days_entry.pack(side="left", padx=(0, 10))
+        self._wait_days_entry.bind("<Return>", lambda _: self._save_wait_days())
+
+        ctk.CTkButton(
+            wait_frame, text="Save", width=110, height=36,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            command=self._save_wait_days,
+        ).pack(side="left")
+
         ctk.CTkLabel(
             tab, text="Dropbox Destination Folder",
             font=ctk.CTkFont(size=17, weight="bold"),
-        ).pack(pady=(32, 8))
+        ).pack(pady=(24, 8))
 
         dropbox_frame = ctk.CTkFrame(tab, fg_color="transparent")
         dropbox_frame.pack(pady=(0, 8))
@@ -231,17 +253,46 @@ class SumacBotGUI(ctk.CTk):
         self._add_recipient_row(email)
         self._new_email_entry.delete(0, "end")
 
+    # config.txt: line 1 = Dropbox destination folder, line 2 = wait days for clients.
+
+    def _read_config_lines(self) -> list[str]:
+        if not DROPBOX_CONFIG.exists():
+            return []
+        return [l.strip() for l in DROPBOX_CONFIG.read_text(encoding="utf-8").splitlines()]
+
+    def _write_config_line(self, idx: int, value: str) -> None:
+        lines = self._read_config_lines()
+        if idx == 1 and not (lines and lines[0]):
+            lines = [self._read_dropbox_path()]
+        lines += [""] * (idx + 1 - len(lines))
+        lines[idx] = value
+        DROPBOX_CONFIG.write_text("\n".join(lines), encoding="utf-8")
+
     def _read_dropbox_path(self) -> str:
-        if DROPBOX_CONFIG.exists():
-            path = DROPBOX_CONFIG.read_text(encoding="utf-8").strip()
-            if path:
-                return path
+        lines = self._read_config_lines()
+        if lines and lines[0]:
+            return lines[0]
         return r"C:\Users\luisd\Dropbox\Coquibot"
 
     def _save_dropbox_path(self) -> None:
         path = self._dropbox_entry.get().strip()
         if path:
-            DROPBOX_CONFIG.write_text(path, encoding="utf-8")
+            self._write_config_line(0, path)
+
+    def _read_wait_days(self) -> str:
+        lines = self._read_config_lines()
+        if len(lines) > 1 and lines[1].isdigit():
+            return lines[1]
+        return "1"
+
+    def _save_wait_days(self) -> None:
+        value = self._wait_days_entry.get().strip()
+        if value.isdigit():
+            self._write_config_line(1, str(int(value)))
+        else:
+            # Not a whole number — put back the saved value.
+            self._wait_days_entry.delete(0, "end")
+            self._wait_days_entry.insert(0, self._read_wait_days())
 
     # ── Bot tab handlers ──────────────────────────────────────────────────────
 

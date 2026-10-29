@@ -53,6 +53,11 @@ _SMTP_PORT       = 587
 _DROPBOX_DEFAULT = Path(r"C:\Users\luisd\Dropbox\Coquibot")
 _DROPBOX_LOG     = _SCRIPT_DIR / "dropboxLog.txt"
 _CASES_EMAILS = _SCRIPT_DIR / "casesEmails.csv"
+_CLIENT_BACKLOG = _SCRIPT_DIR / "clientEmailsBacklog.csv"
+_CLIENT_BACKLOG_HEADER = ["Date recorded", "Date to send email", "Case number",
+                          "Expediente number", "Email", "Name", "Sent date"]
+_CLIENT_WAIT_DAYS_DEFAULT = 1
+_CLIENT_BACKLOG_KEEP_DAYS = 183  # sent lines whose send date is older than ~6 months are dropped
 
 _BUZON_FOLDER_NAME = "_Buzon_de_Mindie"  # created directly under the Dropbox destination
 
@@ -77,14 +82,29 @@ Phone: (787) 764-5517 | E-mail: despachotimothee@gmail.com
 """
 
 
+def _read_config_lines() -> list[str]:
+    """config.txt: line 1 = Dropbox destination folder, line 2 = wait days for clients."""
+    config_path = _SCRIPT_DIR / "config.txt"
+    if not config_path.exists():
+        return []
+    return [l.strip() for l in config_path.read_text(encoding="utf-8").splitlines()]
+
+
 def _read_dropbox_dest() -> Path:
     """Read the Dropbox destination folder from config.txt, falling back to the default."""
-    config_path = _SCRIPT_DIR / "config.txt"
-    if config_path.exists():
-        stored = config_path.read_text(encoding="utf-8").strip()
-        if stored:
-            return Path(stored)
+    lines = _read_config_lines()
+    if lines and lines[0]:
+        return Path(lines[0])
     return _DROPBOX_DEFAULT
+
+
+def _read_client_wait_days() -> int:
+    """Read "Wait days for clients" from config.txt line 2, falling back to the default."""
+    lines = _read_config_lines()
+    try:
+        return max(0, int(lines[1]))
+    except (IndexError, ValueError):
+        return _CLIENT_WAIT_DAYS_DEFAULT
 
 
 def _write_dropbox_log(new_files: list[str]) -> None:
@@ -144,10 +164,12 @@ def _send_email(new_files: list[str]) -> None:
         print(f"❌ Failed to send email notification: {e}")
 
 
-def _read_cases_emails() -> dict[str, list[tuple[str, str]]]:
+def _read_cases_emails(clients: bool = False) -> dict[str, list[tuple[str, str]]]:
     """Return {case_code: [(email, name), ...]} from casesEmails.csv.
 
-    Col A = case code, col B = email, col C = recipient name (optional).
+    Col A = case code, col B = email, col C = recipient name (optional),
+    col D = "C" for a client row (sent later via clientEmailsBacklog.csv).
+    `clients` selects the client rows; otherwise only the non-client rows are returned.
     The same case code may appear on multiple rows; each row adds another recipient.
     """
     if not _CASES_EMAILS.exists():
@@ -156,14 +178,50 @@ def _read_cases_emails() -> dict[str, list[tuple[str, str]]]:
     with open(_CASES_EMAILS, encoding="utf-8-sig", newline="") as f:
         for row in csv.reader(f):
             if len(row) >= 2 and row[0].strip() and row[1].strip():
+                is_client = len(row) >= 4 and row[3].strip().upper() == "C"
+                if is_client != clients:
+                    continue
                 name = row[2].strip() if len(row) >= 3 else ""
                 mapping.setdefault(row[0].strip(), []).append((row[1].strip(), name))
     # Header row filtered out — its column A won't match the 13-char case code pattern
     return {k: v for k, v in mapping.items() if CASE_CODE_RE.fullmatch(k)}
 
 
+def _send_case_batches(server, sender: str, recipient: str, name: str, code: str,
+                       fnames: list[str], log_tag: str = "") -> None:
+    """Send `fnames` (from sumac_documents) to one recipient, `_BATCH_SIZE` files per email."""
+    batches = [fnames[i:i + _BATCH_SIZE] for i in range(0, len(fnames), _BATCH_SIZE)]
+    total_batches = len(batches)
+    for batch_idx, batch in enumerate(batches, start=1):
+        if total_batches > 1:
+            subject = f"{batch_idx} de {total_batches}: {_CASE_EMAIL_SUBJECT}"
+        else:
+            subject = _CASE_EMAIL_SUBJECT
+        body = _CASE_EMAIL_BODY.format(name=name)
+        msg = MIMEMultipart()
+        msg["From"]    = sender
+        msg["To"]      = recipient
+        msg["Subject"] = subject
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+        for fname in batch:
+            fpath = _SCRIPT_DIR / "sumac_documents" / fname
+            if fpath.exists():
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(fpath.read_bytes())
+                encoders.encode_base64(part)
+                part.add_header("Content-Disposition", "attachment", filename=fname)
+                msg.attach(part)
+        server.sendmail(sender, [recipient], msg.as_string())
+        batch_label = f" ({batch_idx}/{total_batches})" if total_batches > 1 else ""
+        print(f"📧 {log_tag}Case email{batch_label} → {recipient}  (case {code}, {len(batch)} file(s))")
+        with open(_DROPBOX_LOG, "a", encoding="utf-8") as f:
+            f.write(f"📧 {log_tag}Email sent to: {recipient} (case {code}){batch_label}\n")
+
+
 def _send_case_emails(new_files: list[str]) -> None:
-    """For each case code in new_files that appears in casesEmails.csv, send one email."""
+    """For each case code in new_files that appears in casesEmails.csv, send one email.
+
+    Client rows (col D = "C") are skipped here — see _process_client_emails."""
     cases_map = _read_cases_emails()
     if not cases_map:
         return
@@ -191,35 +249,113 @@ def _send_case_emails(new_files: list[str]) -> None:
             server.starttls()
             server.login(sender, password)
             for code, files in to_notify.items():
-                batches = [files[i:i + _BATCH_SIZE] for i in range(0, len(files), _BATCH_SIZE)]
-                total_batches = len(batches)
                 for recipient, name in cases_map[code]:
-                    for batch_idx, batch in enumerate(batches, start=1):
-                        if total_batches > 1:
-                            subject = f"{batch_idx} de {total_batches}: {_CASE_EMAIL_SUBJECT}"
-                        else:
-                            subject = _CASE_EMAIL_SUBJECT
-                        body = _CASE_EMAIL_BODY.format(name=name)
-                        msg = MIMEMultipart()
-                        msg["From"]    = sender
-                        msg["To"]      = recipient
-                        msg["Subject"] = subject
-                        msg.attach(MIMEText(body, "plain", "utf-8"))
-                        for fname in batch:
-                            fpath = _SCRIPT_DIR / "sumac_documents" / fname
-                            if fpath.exists():
-                                part = MIMEBase("application", "octet-stream")
-                                part.set_payload(fpath.read_bytes())
-                                encoders.encode_base64(part)
-                                part.add_header("Content-Disposition", "attachment", filename=fname)
-                                msg.attach(part)
-                        server.sendmail(sender, [recipient], msg.as_string())
-                        batch_label = f" ({batch_idx}/{total_batches})" if total_batches > 1 else ""
-                        print(f"📧 Case email{batch_label} → {recipient}  (case {code}, {len(batch)} file(s))")
-                        with open(_DROPBOX_LOG, "a", encoding="utf-8") as f:
-                            f.write(f"📧 Email sent to: {recipient} (case {code}){batch_label}\n")
+                    _send_case_batches(server, sender, recipient, name, code, files)
     except Exception as e:
         print(f"❌ Failed to send case notification emails: {e}")
+
+
+# ── emails_to_clients ─────────────────────────────────────────────────────────
+# Client rows of casesEmails.csv (col D = "C") are not emailed right away.  Each
+# new expediente is queued in clientEmailsBacklog.csv with a send date of
+# today + "Wait days for clients"; every run sends the lines that are due.
+
+_EXPEDIENTE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}_\[(\d+)\]')
+
+
+def _read_client_backlog() -> list[dict[str, str]]:
+    if not _CLIENT_BACKLOG.exists():
+        return []
+    with open(_CLIENT_BACKLOG, encoding="utf-8-sig", newline="") as f:
+        return [
+            {k: (row.get(k) or "").strip() for k in _CLIENT_BACKLOG_HEADER}
+            for row in csv.DictReader(f)
+        ]
+
+
+def _write_client_backlog(rows: list[dict[str, str]]) -> None:
+    with open(_CLIENT_BACKLOG, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_CLIENT_BACKLOG_HEADER)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _expediente_files(code: str, exp: str) -> list[str]:
+    """Files in sumac_documents for one expediente of a case, minus NOTIFICACIÓN AUTOMÁTICA.
+
+    Matched on the "<date>_[<exp>]" prefix + case code rather than full names,
+    since files may have been renamed (initials, referenced-number tags) since."""
+    folder = _SCRIPT_DIR / "sumac_documents"
+    if not folder.exists():
+        return []
+    files = []
+    for f in folder.iterdir():
+        m = _EXPEDIENTE_RE.match(f.name)
+        if (f.is_file() and m and m.group(1) == exp and get_case_code(f.name) == code
+                and not is_excluded_from_sync(f.name)):
+            files.append(f.name)
+    return sorted(files)
+
+
+def _process_client_emails(new_files: list[str]) -> None:
+    """Queue new expedientes for client recipients, then send backlog lines that are due."""
+    clients_map = _read_cases_emails(clients=True)
+    rows = _read_client_backlog()
+    today = datetime.date.today()
+
+    # 1. Queue: one line per (case, expediente, client email).
+    if clients_map and new_files:
+        send_on = (today + datetime.timedelta(days=_read_client_wait_days())).isoformat()
+        queued = {(r["Case number"], r["Expediente number"], r["Email"].lower()) for r in rows}
+        for fname in new_files:
+            code = get_case_code(fname)
+            m = _EXPEDIENTE_RE.match(fname)
+            if not code or not m or code not in clients_map:
+                continue
+            for email, name in clients_map[code]:
+                key = (code, m.group(1), email.lower())
+                if key in queued:
+                    continue
+                queued.add(key)
+                rows.append({
+                    "Date recorded": today.isoformat(), "Date to send email": send_on,
+                    "Case number": code, "Expediente number": m.group(1),
+                    "Email": email, "Name": name, "Sent date": "",
+                })
+                print(f"🕒 Client email queued for {send_on} → {email}  (case {code}, exp {m.group(1)})")
+
+    # 2. Send the lines that are due (send date today or earlier, not yet sent).
+    def _date(s):
+        try:
+            return datetime.date.fromisoformat(s)
+        except ValueError:
+            return None
+
+    due = [r for r in rows if not r["Sent date"] and _date(r["Date to send email"])
+           and _date(r["Date to send email"]) <= today]
+    if due:
+        try:
+            sender, password, _ = _read_email_config()
+            with smtplib.SMTP(_SMTP_HOST, _SMTP_PORT) as server:
+                server.starttls()
+                server.login(sender, password)
+                for r in due:
+                    files = _expediente_files(r["Case number"], r["Expediente number"])
+                    if not files:
+                        print(f"⚠️  Client email not sent — no files found for case "
+                              f"{r['Case number']}, exp {r['Expediente number']} (will retry next run)")
+                        continue
+                    _send_case_batches(server, sender, r["Email"], r["Name"],
+                                       r["Case number"], files, log_tag="Client ")
+                    r["Sent date"] = today.isoformat()
+        except Exception as e:
+            print(f"❌ Failed to send client emails: {e}")
+
+    # 3. Drop sent lines whose send date is older than ~6 months.
+    cutoff = today - datetime.timedelta(days=_CLIENT_BACKLOG_KEEP_DAYS)
+    rows = [r for r in rows if not (r["Sent date"] and _date(r["Date to send email"])
+                                    and _date(r["Date to send email"]) < cutoff)]
+    _write_client_backlog(rows)
 
 
 def is_excluded_from_sync(filename):
@@ -380,6 +516,8 @@ def copy_files_to_dropbox_subfolders(source_folder=None, destination_folder=None
         _write_dropbox_log(new_files)
         _send_email(new_files)
         _send_case_emails(new_files)
+    # Runs even with no new files so backlog lines queued on earlier runs go out when due.
+    _process_client_emails(new_files)
 
 
 def move_files_from_UNKNOWN_to_dropbox_subfolders(destination_folder=None):
