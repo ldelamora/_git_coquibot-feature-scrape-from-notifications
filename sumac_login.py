@@ -135,7 +135,7 @@ def _tag_documento_with_presenter(filename_prefix, case_number):
     """For a "NOTIFICACIÓN AUTOMÁTICA" notification, insert the initials of whoever
     filed the Documento into the Documento's filename:
 
-        <prefix> - <title>_<case>.pdf  ->  <prefix> - (JMDCP) - <title>_<case>.pdf
+        <prefix> - <title>_<case>.pdf  ->  <prefix> (JMDCP) <title>_<case>.pdf
     """
     dest = Path("sumac_documents")
     if not dest.exists():
@@ -164,9 +164,12 @@ def _tag_documento_with_presenter(filename_prefix, case_number):
     if not initials:
         return
     for doc in files:
-        if doc in notifs or re.match(r" - \([A-Z]{1,5}\) - ", doc.name[n:]):
+        if doc in notifs or re.match(r" (?:- )?\([A-Z]{1,5}\) ", doc.name[n:]):
             continue
-        new_name = f"{filename_prefix} - ({initials}){doc.name[n:]}"
+        rest = doc.name[n:]
+        if rest.startswith(" - "):
+            rest = rest[3:]
+        new_name = f"{filename_prefix} ({initials}) {rest}" if rest[:1] != "_" else f"{filename_prefix} ({initials}){rest}"
         try:
             doc.rename(dest / new_name)
             print(f"    [Rename] {doc.name} -> {new_name}")
