@@ -158,17 +158,23 @@ class SumacBotGUI(ctk.CTk):
         wait_frame = ctk.CTkFrame(tab, fg_color="transparent")
         wait_frame.pack(pady=(4, 0))
 
+        # Same 380 px width as the email/Dropbox entries so the Save button lines
+        # up with the Add and Save buttons in the other rows.
+        wait_left = ctk.CTkFrame(wait_frame, fg_color="transparent", width=380, height=36)
+        wait_left.pack_propagate(False)
+        wait_left.pack(side="left", padx=(0, 10))
+
         ctk.CTkLabel(
-            wait_frame, text="Wait days for clients",
+            wait_left, text="Wait days for clients",
             font=ctk.CTkFont(size=14, weight="bold"),
-        ).pack(side="left", padx=(0, 10))
+        ).pack(side="left")
 
         self._wait_days_entry = ctk.CTkEntry(
-            wait_frame, width=70,
+            wait_left, width=70,
             font=ctk.CTkFont(size=13),
         )
         self._wait_days_entry.insert(0, self._read_wait_days())
-        self._wait_days_entry.pack(side="left", padx=(0, 10))
+        self._wait_days_entry.pack(side="right")
         self._wait_days_entry.bind("<Return>", lambda _: self._save_wait_days())
 
         ctk.CTkButton(
