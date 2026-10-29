@@ -244,6 +244,11 @@ def _tag_with_referenced_numbers(filename_prefix, case_number):
             continue
         new_name = f"{f.name[:-len(suffix)]}_{refs}{suffix}"
         try:
+            if (dest / new_name).exists():
+                # Re-downloaded copy of a file already saved with the tag.
+                f.unlink()
+                print(f"    [Rename] {f.name} duplicates {new_name} — removed")
+                continue
             f.rename(dest / new_name)
             print(f"    [Rename] {f.name} -> {new_name}")
         except OSError as e:
