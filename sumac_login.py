@@ -172,6 +172,20 @@ def _tag_documento_with_presenter(filename_prefix, case_number):
             print(f"    [Rename] Failed for {doc.name}: {e}")
 
 
+def _unshift_cipher_lines(text):
+    """Undo the +29 character shift some court PDFs apply to body text.
+
+    Their fonts lack a ToUnicode map, so extract_text yields e.g. "FRQ" for "con"
+    and a control character for a space. Shifted lines are recognisable by those
+    control characters; plain lines (e.g. "[9]") are kept as they are."""
+    out = []
+    for line in text.split("\n"):
+        if any(ord(c) < 0x20 and c != "\t" for c in line):
+            line = "".join(chr(ord(c) + 29) if ord(c) < 0x80 else c for c in line)
+        out.append(line)
+    return "\n".join(out)
+
+
 def _referenced_numbers(pdf_path, max_refs=3, max_chars=5):
     """Bracketed numbers (e.g. "[121]") in the sentence containing "con relación al".
 
@@ -179,12 +193,12 @@ def _referenced_numbers(pdf_path, max_refs=3, max_chars=5):
     cut to `max_chars` characters), or "" when not found / unreadable."""
     try:
         from pypdf import PdfReader
-        text = " ".join((p.extract_text() or "") for p in PdfReader(pdf_path).pages)
+        text = "\n".join((p.extract_text() or "") for p in PdfReader(pdf_path).pages)
     except Exception as e:
         print(f"    [Rename] Could not read {pdf_path}: {e}")
         return ""
-    text = re.sub(r"\s+", " ", text)
-    m = re.search(r"con\s+relaci[oó]n\s+al", text, re.IGNORECASE)
+    text = re.sub(r"\s+", " ", _unshift_cipher_lines(text))
+    m = re.search(r"con\s+relaci.n\s+al", text, re.IGNORECASE)
     if not m:
         return ""
     sentence = re.split(r"\.(?:\s|$)", text[m.start():], maxsplit=1)[0]
