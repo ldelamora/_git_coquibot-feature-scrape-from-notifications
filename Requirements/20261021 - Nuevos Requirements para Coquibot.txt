@@ -1,15 +1,19 @@
 20261021: Coquibot Requiremments de mejoras 
 
-1) NUmero de Sumac al final de los nombres de los pdfs
+1) ##### OK #####  NUmero de Sumac al final de los nombres de los pdfs 
 
-2) Notification automatica : Bajar para poder buscar "presentada por" y agarrar todas primeras letras de las palavras antes del parenteses (maximo de 5).
+
+2) Notification automatica : Bajar para poder buscar "presentada por" y 
+.
 
 Fecha[entrada] ("iniciales del presentador") "titulo del documento".pdf
 
-3) Sacar el default texto de "Notificacion" + Sacar fecha que viene en texto de Notification
+
+3) ##### OK #####  Sacar el default texto de "Notificacion" + Sacar fecha que viene en texto de Notification
 
 
 4) Notificacion de orden:
+
 en la notificacion buscar: "con relacio'n al" y agarramenos el docket relacionado (buscar next entre colchetes (maximo 3) pero solemente hasta el primer punto.
 Esse numero [xxx] lo ponemos en el nombre dese archivo. Como por ejemplo:
 
@@ -33,16 +37,17 @@ Puede no existir y nese caso no poner nada del numero.
 
 Mismo (Trib) para el "documento". Tambien poner el [xxx] en "documento".
 
-6) TOdo "Documento" que tienga titulo con "Minuta" => ponemos (Trib)
 
-7) "Notificacion de secretaria".
+6) ##### OK ##### TOdo "Documento" que tienga titulo con "Minuta" => ponemos (Trib)
+
+7) ##### OK ##### "Notificacion de secretaria".
 => Poner (Trib) para todo "documento" y notificacion.
 
 8) Atraso para envio de email para cliente.
 => crear una variable de tiempo de retraso. Crear carpeta de pendiente de enviar a cliente dentro de la carpeta Coquibot. De ai ser ira borrando
 lo que ya fue enviado al cliente.
 
-9) Carpeta de pendientes documento.
+9) ##### OK ##### Carpeta de pendientes documento.
 
  Crear carpeta "_Buzon de Mindie" en el dropbox. El "_" es para aparecer en el top de la carpeta de dropbox.
 Ai haremos una copia de todos los documentos que lleguen nuevos. Mindie los va habrir y una vez procesados, los va ir borando.
