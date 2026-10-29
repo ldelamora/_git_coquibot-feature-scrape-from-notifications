@@ -110,6 +110,68 @@ def _build_filename(prefix, middle, case_number, max_length=100):
     return stem + suffix
 
 
+def _presented_by_initials(pdf_path, max_initials=5):
+    """Initials of the words after "presentada por" (up to the first "("), or "".
+
+    Only the first `max_initials` initials are kept. Returns "" when the PDF
+    cannot be read or has no "presentada por"."""
+    try:
+        from pypdf import PdfReader
+        text = " ".join((p.extract_text() or "") for p in PdfReader(pdf_path).pages)
+    except Exception as e:
+        print(f"    [Rename] Could not read {pdf_path}: {e}")
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    m = re.search(r"presentada\s+por\s+([^(]+)\(", text, re.IGNORECASE)
+    if not m:
+        return ""
+    words = re.findall(r"[^\W\d_]+", m.group(1))
+    return "".join(w[0].upper() for w in words)[:max_initials]
+
+
+def _tag_documento_with_presenter(filename_prefix, case_number):
+    """For a "NOTIFICACIÓN AUTOMÁTICA" notification, insert the initials of whoever
+    filed the Documento into the Documento's filename:
+
+        <prefix> - <title>_<case>.pdf  ->  <prefix> - (JMDCP) - <title>_<case>.pdf
+    """
+    dest = Path("sumac_documents")
+    if not dest.exists():
+        return
+    suffix = f"_{case_number}.pdf"
+    n = len(filename_prefix)
+    files = [
+        f for f in dest.iterdir()
+        if f.is_file() and f.name.startswith(filename_prefix)
+        and f.name.endswith(suffix)
+        and f.name[n:n + 1] in (" ", "_")
+        and not f.name[n:].startswith("_anejo_")
+    ]
+
+    def plain(name):
+        return unicodedata.normalize("NFD", name).encode("ascii", "ignore").decode().lower()
+
+    notifs = [f for f in files if "notificacion automatica" in plain(f.name)]
+    if not notifs:
+        return
+    initials = ""
+    for nf in notifs:
+        initials = _presented_by_initials(str(nf))
+        if initials:
+            break
+    if not initials:
+        return
+    for doc in files:
+        if doc in notifs or re.match(r" - \([A-Z]{1,5}\) - ", doc.name[n:]):
+            continue
+        new_name = f"{filename_prefix} - ({initials}){doc.name[n:]}"
+        try:
+            doc.rename(dest / new_name)
+            print(f"    [Rename] {doc.name} -> {new_name}")
+        except OSError as e:
+            print(f"    [Rename] Failed for {doc.name}: {e}")
+
+
 def _cookie_header(page):
     """
     Build a Cookie header string from the current browser session.
@@ -1032,6 +1094,8 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
     _download_from_tab(page, "Notificación", filename_prefix, case_number, existing_docs, captured_pdf_urls, captured_pdf_data,
                        session_blob_srcs)
     print(f"    [timing] Notificación done at +{time.time() - t_exp_start:.1f}s")
+
+    _tag_documento_with_presenter(filename_prefix, case_number)
 
     # Return to case detail (Level 2) using browser history.
     # wait_for_selector ensures the expediente list is ready before the caller
