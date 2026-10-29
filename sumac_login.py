@@ -172,6 +172,68 @@ def _tag_documento_with_presenter(filename_prefix, case_number):
             print(f"    [Rename] Failed for {doc.name}: {e}")
 
 
+def _referenced_numbers(pdf_path, max_refs=3, max_chars=5):
+    """Bracketed numbers (e.g. "[121]") in the sentence containing "con relación al".
+
+    Returns the concatenated "[121][122]" string (at most `max_refs` entries, each
+    cut to `max_chars` characters), or "" when not found / unreadable."""
+    try:
+        from pypdf import PdfReader
+        text = " ".join((p.extract_text() or "") for p in PdfReader(pdf_path).pages)
+    except Exception as e:
+        print(f"    [Rename] Could not read {pdf_path}: {e}")
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    m = re.search(r"con\s+relaci[oó]n\s+al", text, re.IGNORECASE)
+    if not m:
+        return ""
+    sentence = re.split(r"\.(?:\s|$)", text[m.start():], maxsplit=1)[0]
+    refs = [r.strip()[:max_chars] for r in re.findall(r"\[([^\]]+)\]", sentence)]
+    return "".join(f"[{r}]" for r in refs[:max_refs] if r)
+
+
+def _tag_with_referenced_numbers(filename_prefix, case_number):
+    """For a "Notificación de resolución/orden", append the bracketed numbers it
+    refers to to the notification's and its Documento's filenames:
+
+        <prefix> - (Trib) - <title>_<case>.pdf  ->  <prefix> - (Trib) - <title>_[121]_<case>.pdf
+    """
+    dest = Path("sumac_documents")
+    if not dest.exists():
+        return
+    suffix = f"_{case_number}.pdf"
+    n = len(filename_prefix)
+    files = [
+        f for f in dest.iterdir()
+        if f.is_file() and f.name.startswith(filename_prefix)
+        and f.name.endswith(suffix)
+        and f.name[n:n + 1] in (" ", "_")
+        and not f.name[n:].startswith("_anejo_")
+    ]
+
+    def plain(name):
+        return unicodedata.normalize("NFD", name).encode("ascii", "ignore").decode().lower()
+
+    notifs = [f for f in files
+              if "notificacion de resolucion" in plain(f.name) or "notificacion de orden" in plain(f.name)]
+    refs = ""
+    for nf in notifs:
+        refs = _referenced_numbers(str(nf))
+        if refs:
+            break
+    if not refs:
+        return
+    for f in files:
+        if re.search(r"\]" + re.escape(suffix) + "$", f.name) and f.name[:-len(suffix)].endswith(refs):
+            continue
+        new_name = f"{f.name[:-len(suffix)]}_{refs}{suffix}"
+        try:
+            f.rename(dest / new_name)
+            print(f"    [Rename] {f.name} -> {new_name}")
+        except OSError as e:
+            print(f"    [Rename] Failed for {f.name}: {e}")
+
+
 def _cookie_header(page):
     """
     Build a Cookie header string from the current browser session.
@@ -1095,6 +1157,7 @@ def _process_expediente(page, exp_idx, case_number, exp_number, exp_date, captur
                        session_blob_srcs)
     print(f"    [timing] Notificación done at +{time.time() - t_exp_start:.1f}s")
 
+    _tag_with_referenced_numbers(filename_prefix, case_number)
     _tag_documento_with_presenter(filename_prefix, case_number)
 
     # Return to case detail (Level 2) using browser history.
