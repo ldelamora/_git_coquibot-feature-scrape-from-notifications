@@ -274,10 +274,23 @@ def _read_client_backlog() -> list[dict[str, str]]:
 
 
 def _write_client_backlog(rows: list[dict[str, str]]) -> None:
-    with open(_CLIENT_BACKLOG, "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=_CLIENT_BACKLOG_HEADER)
-        writer.writeheader()
-        writer.writerows(rows)
+    try:
+        with open(_CLIENT_BACKLOG, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=_CLIENT_BACKLOG_HEADER)
+            writer.writeheader()
+            writer.writerows(rows)
+    except PermissionError:
+        print(f"❌ Could not update {_CLIENT_BACKLOG.name} — is it open in Excel? Close it and run again.")
+
+
+def _parse_backlog_date(s: str):
+    """Parse a backlog date: ISO (2026-10-29) or Excel's US format (10/29/2026, 10/29/26)."""
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
+        try:
+            return datetime.datetime.strptime(s.strip(), fmt).date()
+        except ValueError:
+            pass
+    return None
 
 
 def _expediente_files(code: str, exp: str) -> list[str]:
@@ -325,11 +338,11 @@ def _process_client_emails(new_files: list[str]) -> None:
                 print(f"🕒 Client email queued for {send_on} → {email}  (case {code}, exp {m.group(1)})")
 
     # 2. Send the lines that are due (send date today or earlier, not yet sent).
-    def _date(s):
-        try:
-            return datetime.date.fromisoformat(s)
-        except ValueError:
-            return None
+    _date = _parse_backlog_date
+    for r in rows:
+        if r["Date to send email"] and not _date(r["Date to send email"]):
+            print(f"⚠️  Client backlog: unreadable send date '{r['Date to send email']}' "
+                  f"(case {r['Case number']}, exp {r['Expediente number']}) — use YYYY-MM-DD")
 
     due = [r for r in rows if not r["Sent date"] and _date(r["Date to send email"])
            and _date(r["Date to send email"]) <= today]
