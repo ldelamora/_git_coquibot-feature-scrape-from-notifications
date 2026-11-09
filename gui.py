@@ -183,6 +183,32 @@ class SumacBotGUI(ctk.CTk):
             command=self._save_wait_days,
         ).pack(side="left")
 
+        entries_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        entries_frame.pack(pady=(4, 0))
+
+        entries_left = ctk.CTkFrame(entries_frame, fg_color="transparent", width=380, height=36)
+        entries_left.pack_propagate(False)
+        entries_left.pack(side="left", padx=(0, 10))
+
+        ctk.CTkLabel(
+            entries_left, text='Numero de "entradas" a bajar:',
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(side="left")
+
+        self._entries_entry = ctk.CTkEntry(
+            entries_left, width=70,
+            font=ctk.CTkFont(size=13),
+        )
+        self._entries_entry.insert(0, self._read_entries())
+        self._entries_entry.pack(side="right")
+        self._entries_entry.bind("<Return>", lambda _: self._save_entries())
+
+        ctk.CTkButton(
+            entries_frame, text="Save", width=110, height=36,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            command=self._save_entries,
+        ).pack(side="left")
+
         ctk.CTkLabel(
             tab, text="Dropbox Destination Folder",
             font=ctk.CTkFont(size=17, weight="bold"),
@@ -259,7 +285,8 @@ class SumacBotGUI(ctk.CTk):
         self._add_recipient_row(email)
         self._new_email_entry.delete(0, "end")
 
-    # config.txt: line 1 = Dropbox destination folder, line 2 = wait days for clients.
+    # config.txt: line 1 = Dropbox destination folder, line 2 = wait days for clients,
+    # line 3 = number of entradas (expedientes) to download per case.
 
     def _read_config_lines(self) -> list[str]:
         if not DROPBOX_CONFIG.exists():
@@ -299,6 +326,21 @@ class SumacBotGUI(ctk.CTk):
             # Not a whole number — put back the saved value.
             self._wait_days_entry.delete(0, "end")
             self._wait_days_entry.insert(0, self._read_wait_days())
+
+    def _read_entries(self) -> str:
+        lines = self._read_config_lines()
+        if len(lines) > 2 and lines[2].isdigit() and int(lines[2]) >= 1:
+            return lines[2]
+        return "1"
+
+    def _save_entries(self) -> None:
+        value = self._entries_entry.get().strip()
+        if value.isdigit() and int(value) >= 1:
+            self._write_config_line(2, str(int(value)))
+        else:
+            # Not a positive whole number — put back the saved value.
+            self._entries_entry.delete(0, "end")
+            self._entries_entry.insert(0, self._read_entries())
 
     # ── Bot tab handlers ──────────────────────────────────────────────────────
 

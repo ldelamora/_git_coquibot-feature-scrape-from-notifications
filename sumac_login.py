@@ -68,6 +68,16 @@ CREDENTIALS_FILE = "sumac.txt"
 #   3. Notificación — tab click (view changes, pillbox hidden; anejos already done)
 
 
+def _read_entries_to_download() -> int:
+    """Number of expedientes ("entradas") to download per case: config.txt line 3, default 1."""
+    base = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
+    try:
+        lines = (base / "config.txt").read_text(encoding="utf-8").splitlines()
+        return max(1, int(lines[2].strip()))
+    except (OSError, IndexError, ValueError):
+        return 1
+
+
 def read_credentials():
     """Read username and password from the two-line credentials file."""
     with open(CREDENTIALS_FILE, "r") as f:
@@ -1284,7 +1294,7 @@ def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, c
 
             print(f"  Found {docket_count} docket entries: {docket_numbers}")
 
-            for i, docket_number in enumerate(docket_numbers[:1]):
+            for i, docket_number in enumerate(docket_numbers[:_read_entries_to_download()]):
                 try:
                     # Same _process_expediente used for regular expedientes —
                     # the detail view (Documento/Anejo/Notificación) is identical,
@@ -1344,7 +1354,7 @@ def _process_case(page, case_idx, case_number, landing_url, captured_pdf_urls, c
 
     print(f"  Found {exp_count} expedientes: {exp_numbers}")
 
-    for i, exp_number in enumerate(exp_numbers[:1]):
+    for i, exp_number in enumerate(exp_numbers[:_read_entries_to_download()]):
         try:
             _process_expediente(page, i, case_number, exp_number, exp_dates[i], captured_pdf_urls, captured_pdf_data,
                                 session_blob_srcs)
