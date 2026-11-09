@@ -329,16 +329,16 @@ class SumacBotGUI(ctk.CTk):
 
     def _read_entries(self) -> str:
         lines = self._read_config_lines()
-        if len(lines) > 2 and lines[2].isdigit() and int(lines[2]) >= 1:
+        if len(lines) > 2 and lines[2].isdigit() and 1 <= int(lines[2]) <= 15:
             return lines[2]
         return "3"
 
     def _save_entries(self) -> None:
         value = self._entries_entry.get().strip()
-        if value.isdigit() and int(value) >= 1:
+        if value.isdigit() and 1 <= int(value) <= 15:
             self._write_config_line(2, str(int(value)))
         else:
-            # Not a positive whole number — put back the saved value.
+            # Not a whole number from 1 to 15 — put back the saved value.
             self._entries_entry.delete(0, "end")
             self._entries_entry.insert(0, self._read_entries())
 

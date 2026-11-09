@@ -69,11 +69,11 @@ CREDENTIALS_FILE = "sumac.txt"
 
 
 def _read_entries_to_download() -> int:
-    """Number of expedientes ("entradas") to download per case: config.txt line 3, default 3."""
+    """Number of expedientes ("entradas") to download per case: config.txt line 3 (1-15), default 3."""
     base = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
     try:
         lines = (base / "config.txt").read_text(encoding="utf-8").splitlines()
-        return max(1, int(lines[2].strip()))
+        return min(15, max(1, int(lines[2].strip())))
     except (OSError, IndexError, ValueError):
         return 3
 
