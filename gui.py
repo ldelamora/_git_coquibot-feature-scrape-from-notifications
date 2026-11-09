@@ -331,7 +331,7 @@ class SumacBotGUI(ctk.CTk):
         lines = self._read_config_lines()
         if len(lines) > 2 and lines[2].isdigit() and int(lines[2]) >= 1:
             return lines[2]
-        return "1"
+        return "3"
 
     def _save_entries(self) -> None:
         value = self._entries_entry.get().strip()
